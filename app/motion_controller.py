@@ -111,9 +111,8 @@ class MotionController:
         bus = get_event_bus()
         bus.publish(camera.id, TOPIC_CELL_MOTION, {"IsMotion": is_motion})
         bus.publish(camera.id, TOPIC_MOTION_ALARM, {"State": is_motion})
-        if getattr(camera, 'debug_mode', False):
-            verb = "STARTED" if is_motion else "STOPPED"
-            print(f"  [Motion] {camera.name}: motion {verb} (source={source})")
+        verb = "STARTED" if is_motion else "STOPPED"
+        print(f"  [Motion] {camera.name}: motion {verb} (source={source})")
 
 
 _CONTROLLER = MotionController()

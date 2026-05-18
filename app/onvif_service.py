@@ -1231,8 +1231,7 @@ class ONVIFService:
         </tev:CreatePullPointSubscriptionResponse>
     </SOAP-ENV:Body>
 </SOAP-ENV:Envelope>"""
-        if getattr(self.camera, 'debug_mode', False):
-            print(f"  [Events] Subscription {sub.id[:8]}… created for {self.camera.name} (timeout {timeout}s)")
+        print(f"  [Events] Subscription {sub.id[:8]}... created for {self.camera.name} (timeout {timeout}s)")
         return Response(body, mimetype='application/soap+xml')
 
     def _handle_pull_messages(self, sub_id, soap_body, local_ip):
@@ -1267,8 +1266,8 @@ class ONVIFService:
         </tev:PullMessagesResponse>
     </SOAP-ENV:Body>
 </SOAP-ENV:Envelope>"""
-        if getattr(self.camera, 'debug_mode', False):
-            print(f"  [Events] PullMessages sub={sub_id[:8]}… returned {len(events)} event(s)")
+        if events or getattr(self.camera, 'debug_mode', False):
+            print(f"  [Events] PullMessages sub={sub_id[:8]}... returned {len(events)} event(s) for {self.camera.name}")
         return Response(body, mimetype='application/soap+xml')
 
     def _render_notification_xml(self, event, local_ip):
@@ -1335,8 +1334,8 @@ class ONVIFService:
         <wsnt:UnsubscribeResponse/>
     </SOAP-ENV:Body>
 </SOAP-ENV:Envelope>"""
-        if getattr(self.camera, 'debug_mode', False) and removed:
-            print(f"  [Events] Subscription {sub_id[:8]}… unsubscribed")
+        if removed:
+            print(f"  [Events] Subscription {sub_id[:8]}... unsubscribed for {self.camera.name}")
         return Response(body, mimetype='application/soap+xml')
 
     def _handle_set_sync_point(self, sub_id):
