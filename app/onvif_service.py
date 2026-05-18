@@ -29,6 +29,8 @@ else:
 
 from .config import CONFIG_FILE
 from .utils import get_local_ip
+from .event_bus import get_event_bus
+import re
 
 class ONVIFService:
     def __init__(self, camera):
@@ -270,7 +272,55 @@ class ONVIFService:
                 import traceback
                 traceback.print_exc()
                 return Response("Internal Server Error", status=500)
-                
+
+        # ONVIF Events Service - subscription entry point
+        @app.route('/onvif/events_service', methods=['GET', 'POST'], endpoint=f'events_service_{self.camera.id}')
+        @require_auth
+        def events_service():
+            try:
+                if request.method == 'GET':
+                    return self._get_events_wsdl()
+
+                soap_body = request.data.decode('utf-8')
+
+                if 'GetEventProperties' in soap_body:
+                    return self._handle_get_event_properties()
+                elif 'CreatePullPointSubscription' in soap_body:
+                    return self._handle_create_pullpoint(soap_body, local_ip)
+                elif 'GetServiceCapabilities' in soap_body:
+                    return self._handle_events_service_capabilities()
+
+                return self._soap_fault("Unsupported event action")
+            except Exception as e:
+                print(f"  Error in events service: {e}")
+                import traceback
+                traceback.print_exc()
+                return Response("Internal Server Error", status=500)
+
+        # ONVIF Events Service - per-subscription endpoint
+        @app.route('/onvif/events_service/subscription/<sub_id>', methods=['POST'],
+                   endpoint=f'events_subscription_{self.camera.id}')
+        @require_auth
+        def events_subscription(sub_id):
+            try:
+                soap_body = request.data.decode('utf-8')
+
+                if 'PullMessages' in soap_body:
+                    return self._handle_pull_messages(sub_id, soap_body, local_ip)
+                elif 'Unsubscribe' in soap_body:
+                    return self._handle_unsubscribe(sub_id)
+                elif 'Renew' in soap_body:
+                    return self._handle_renew(sub_id, soap_body)
+                elif 'SetSynchronizationPoint' in soap_body:
+                    return self._handle_set_sync_point(sub_id)
+
+                return self._soap_fault("Unsupported subscription action")
+            except Exception as e:
+                print(f"  Error in events subscription: {e}")
+                import traceback
+                traceback.print_exc()
+                return Response("Internal Server Error", status=500)
+
         return app
 
     def start_discovery_service(self, local_ip):
@@ -433,7 +483,7 @@ class ONVIFService:
                 <tt:Events>
                     <tt:XAddr>http://{local_ip}:{self.camera.onvif_port}/onvif/events_service</tt:XAddr>
                     <tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport>
-                    <tt:WSPullPointSupport>false</tt:WSPullPointSupport>
+                    <tt:WSPullPointSupport>true</tt:WSPullPointSupport>
                     <tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport>
                 </tt:Events>
                 <tt:Imaging>
@@ -489,6 +539,14 @@ class ONVIFService:
             <tds:Service>
                 <tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace>
                 <tds:XAddr>http://{local_ip}:{self.camera.onvif_port}/onvif/media_service</tds:XAddr>
+                <tds:Version>
+                    <tt:Major xmlns:tt="http://www.onvif.org/ver10/schema">2</tt:Major>
+                    <tt:Minor xmlns:tt="http://www.onvif.org/ver10/schema">5</tt:Minor>
+                </tds:Version>
+            </tds:Service>
+            <tds:Service>
+                <tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace>
+                <tds:XAddr>http://{local_ip}:{self.camera.onvif_port}/onvif/events_service</tds:XAddr>
                 <tds:Version>
                     <tt:Major xmlns:tt="http://www.onvif.org/ver10/schema">2</tt:Major>
                     <tt:Minor xmlns:tt="http://www.onvif.org/ver10/schema">5</tt:Minor>
@@ -1027,5 +1085,269 @@ class ONVIFService:
         </tds:GetScopesResponse>
     </SOAP-ENV:Body>
 </SOAP-ENV:Envelope>"""
-        
+
         return Response(soap_response, mimetype='application/soap+xml')
+
+    # ===== ONVIF Events Service handlers =====
+
+    DEFAULT_SUBSCRIPTION_TIMEOUT = 60
+    MAX_SUBSCRIPTION_TIMEOUT = 3600
+    MAX_PULL_WAIT = 60
+
+    def _parse_iso_duration(self, value, default=DEFAULT_SUBSCRIPTION_TIMEOUT):
+        """Parse an ISO 8601 duration like PT60S, PT1M, PT1M30S into seconds."""
+        if not value:
+            return default
+        m = re.match(r'^-?P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$', value.strip())
+        if not m:
+            return default
+        h = int(m.group(1) or 0)
+        mi = int(m.group(2) or 0)
+        s = int(float(m.group(3) or 0))
+        total = h * 3600 + mi * 60 + s
+        return total or default
+
+    def _extract_xml_value(self, xml, tag_local_name):
+        """Extract the first text value of an element by local name, ignoring namespace prefixes."""
+        m = re.search(rf'<(?:\w+:)?{tag_local_name}[^>]*>([^<]+)</(?:\w+:)?{tag_local_name}>', xml)
+        return m.group(1).strip() if m else None
+
+    def _soap_fault(self, reason):
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+    <SOAP-ENV:Body>
+        <SOAP-ENV:Fault>
+            <SOAP-ENV:Code><SOAP-ENV:Value>SOAP-ENV:Sender</SOAP-ENV:Value></SOAP-ENV:Code>
+            <SOAP-ENV:Reason><SOAP-ENV:Text xml:lang="en">{reason}</SOAP-ENV:Text></SOAP-ENV:Reason>
+        </SOAP-ENV:Fault>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        return Response(body, status=400, mimetype='application/soap+xml')
+
+    def _get_events_wsdl(self):
+        local_ip = self.camera.get_effective_ip()
+        wsdl = f"""<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap12/"
+             targetNamespace="http://www.onvif.org/ver10/events/wsdl">
+    <service name="EventService">
+        <port name="EventPort" binding="tev:EventBinding">
+            <soap:address location="http://{local_ip}:{self.camera.onvif_port}/onvif/events_service"/>
+        </port>
+    </service>
+</definitions>"""
+        return Response(wsdl, mimetype='text/xml')
+
+    def _handle_events_service_capabilities(self):
+        body = """<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
+    <SOAP-ENV:Body>
+        <tev:GetServiceCapabilitiesResponse>
+            <tev:Capabilities WSSubscriptionPolicySupport="false"
+                              WSPullPointSupport="true"
+                              WSPausableSubscriptionManagerInterfaceSupport="false"
+                              MaxNotificationProducers="32"
+                              MaxPullPoints="32"
+                              PersistentNotificationStorage="false"/>
+        </tev:GetServiceCapabilitiesResponse>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        return Response(body, mimetype='application/soap+xml')
+
+    def _handle_get_event_properties(self):
+        """Advertise the motion topics this device emits."""
+        body = """<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+                   xmlns:tns1="http://www.onvif.org/ver10/topics"
+                   xmlns:tt="http://www.onvif.org/ver10/schema"
+                   xmlns:wstop="http://docs.oasis-open.org/wsn/t-1"
+                   xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+    <SOAP-ENV:Body>
+        <tev:GetEventPropertiesResponse>
+            <tev:TopicNamespaceLocation>http://www.onvif.org/onvif/ver10/topics/topicns.xml</tev:TopicNamespaceLocation>
+            <wsnt:FixedTopicSet>true</wsnt:FixedTopicSet>
+            <wstop:TopicSet>
+                <tns1:RuleEngine>
+                    <CellMotionDetector>
+                        <Motion wstop:topic="true">
+                            <tt:MessageDescription IsProperty="true">
+                                <tt:Source>
+                                    <tt:SimpleItemDescription Name="VideoSourceConfigurationToken" Type="tt:ReferenceToken"/>
+                                    <tt:SimpleItemDescription Name="VideoAnalyticsConfigurationToken" Type="tt:ReferenceToken"/>
+                                    <tt:SimpleItemDescription Name="Rule" Type="xs:string"/>
+                                </tt:Source>
+                                <tt:Data>
+                                    <tt:SimpleItemDescription Name="IsMotion" Type="xs:boolean"/>
+                                </tt:Data>
+                            </tt:MessageDescription>
+                        </Motion>
+                    </CellMotionDetector>
+                </tns1:RuleEngine>
+                <tns1:VideoSource>
+                    <MotionAlarm wstop:topic="true">
+                        <tt:MessageDescription IsProperty="true">
+                            <tt:Source>
+                                <tt:SimpleItemDescription Name="Source" Type="tt:ReferenceToken"/>
+                            </tt:Source>
+                            <tt:Data>
+                                <tt:SimpleItemDescription Name="State" Type="xs:boolean"/>
+                            </tt:Data>
+                        </tt:MessageDescription>
+                    </MotionAlarm>
+                </tns1:VideoSource>
+            </wstop:TopicSet>
+            <wsnt:TopicExpressionDialect>http://docs.oasis-open.org/wsn/t-1/TopicExpression/Concrete</wsnt:TopicExpressionDialect>
+            <tev:MessageContentFilterDialect>http://www.onvif.org/ver10/tev/messageContentFilter/ItemFilter</tev:MessageContentFilterDialect>
+        </tev:GetEventPropertiesResponse>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        return Response(body, mimetype='application/soap+xml')
+
+    def _handle_create_pullpoint(self, soap_body, local_ip):
+        initial = self._extract_xml_value(soap_body, 'InitialTerminationTime')
+        timeout = self._parse_iso_duration(initial, default=self.DEFAULT_SUBSCRIPTION_TIMEOUT)
+        timeout = min(timeout, self.MAX_SUBSCRIPTION_TIMEOUT)
+
+        sub = get_event_bus().create_subscription(self.camera.id, timeout)
+        sub_url = f"http://{local_ip}:{self.camera.onvif_port}/onvif/events_service/subscription/{sub.id}"
+        current_iso = self._utc_iso(sub.created_at)
+        terminate_iso = self._utc_iso(sub.expires_at)
+
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+                   xmlns:wsa="http://www.w3.org/2005/08/addressing"
+                   xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+    <SOAP-ENV:Body>
+        <tev:CreatePullPointSubscriptionResponse>
+            <tev:SubscriptionReference>
+                <wsa:Address>{sub_url}</wsa:Address>
+            </tev:SubscriptionReference>
+            <wsnt:CurrentTime>{current_iso}</wsnt:CurrentTime>
+            <wsnt:TerminationTime>{terminate_iso}</wsnt:TerminationTime>
+        </tev:CreatePullPointSubscriptionResponse>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        if getattr(self.camera, 'debug_mode', False):
+            print(f"  [Events] Subscription {sub.id[:8]}… created for {self.camera.name} (timeout {timeout}s)")
+        return Response(body, mimetype='application/soap+xml')
+
+    def _handle_pull_messages(self, sub_id, soap_body, local_ip):
+        timeout_str = self._extract_xml_value(soap_body, 'Timeout')
+        max_str = self._extract_xml_value(soap_body, 'MessageLimit')
+        wait_seconds = min(self._parse_iso_duration(timeout_str, default=1), self.MAX_PULL_WAIT)
+        try:
+            max_messages = max(1, int(max_str)) if max_str else 50
+        except ValueError:
+            max_messages = 50
+
+        sub, events = get_event_bus().pull_messages(sub_id, wait_seconds, max_messages)
+        if sub is None:
+            return self._soap_fault("Unknown or expired subscription")
+
+        now_iso = self._utc_iso()
+        term_iso = self._utc_iso(sub.expires_at)
+        notifications = ''.join(self._render_notification_xml(e, local_ip) for e in events)
+
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+                   xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2"
+                   xmlns:wsa="http://www.w3.org/2005/08/addressing"
+                   xmlns:tns1="http://www.onvif.org/ver10/topics"
+                   xmlns:tt="http://www.onvif.org/ver10/schema">
+    <SOAP-ENV:Body>
+        <tev:PullMessagesResponse>
+            <tev:CurrentTime>{now_iso}</tev:CurrentTime>
+            <tev:TerminationTime>{term_iso}</tev:TerminationTime>
+            {notifications}
+        </tev:PullMessagesResponse>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        if getattr(self.camera, 'debug_mode', False):
+            print(f"  [Events] PullMessages sub={sub_id[:8]}… returned {len(events)} event(s)")
+        return Response(body, mimetype='application/soap+xml')
+
+    def _render_notification_xml(self, event, local_ip):
+        """Render one NotificationMessage element for a published event."""
+        utc_iso = self._utc_iso(event.utc_time)
+        producer_url = f"http://{local_ip}:{self.camera.onvif_port}/onvif/events_service"
+        data_items = ''.join(
+            f'<tt:SimpleItem Name="{name}" Value="{self._xml_bool(value)}"/>'
+            for name, value in event.data.items()
+        )
+        source_token = f"VideoSource_{self.camera.id}"
+        return f"""<wsnt:NotificationMessage>
+                <wsnt:Topic Dialect="http://docs.oasis-open.org/wsn/t-1/TopicExpression/Concrete">{event.topic}</wsnt:Topic>
+                <wsnt:ProducerReference>
+                    <wsa:Address>{producer_url}</wsa:Address>
+                </wsnt:ProducerReference>
+                <wsnt:Message>
+                    <tt:Message UtcTime="{utc_iso}" PropertyOperation="Changed">
+                        <tt:Source>
+                            <tt:SimpleItem Name="VideoSourceConfigurationToken" Value="{source_token}"/>
+                        </tt:Source>
+                        <tt:Data>{data_items}</tt:Data>
+                    </tt:Message>
+                </wsnt:Message>
+            </wsnt:NotificationMessage>"""
+
+    def _xml_bool(self, value):
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        return str(value)
+
+    def _utc_iso(self, ts=None):
+        if ts is None:
+            ts = time.time()
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    def _handle_renew(self, sub_id, soap_body):
+        term = self._extract_xml_value(soap_body, 'TerminationTime')
+        timeout = self._parse_iso_duration(term, default=self.DEFAULT_SUBSCRIPTION_TIMEOUT)
+        timeout = min(timeout, self.MAX_SUBSCRIPTION_TIMEOUT)
+
+        sub = get_event_bus().renew(sub_id, timeout)
+        if sub is None:
+            return self._soap_fault("Unknown or expired subscription")
+
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+    <SOAP-ENV:Body>
+        <wsnt:RenewResponse>
+            <wsnt:CurrentTime>{self._utc_iso()}</wsnt:CurrentTime>
+            <wsnt:TerminationTime>{self._utc_iso(sub.expires_at)}</wsnt:TerminationTime>
+        </wsnt:RenewResponse>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        return Response(body, mimetype='application/soap+xml')
+
+    def _handle_unsubscribe(self, sub_id):
+        removed = get_event_bus().unsubscribe(sub_id)
+        body = """<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+    <SOAP-ENV:Body>
+        <wsnt:UnsubscribeResponse/>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        if getattr(self.camera, 'debug_mode', False) and removed:
+            print(f"  [Events] Subscription {sub_id[:8]}… unsubscribed")
+        return Response(body, mimetype='application/soap+xml')
+
+    def _handle_set_sync_point(self, sub_id):
+        ok = get_event_bus().set_synchronization_point(sub_id)
+        if not ok:
+            return self._soap_fault("Unknown or expired subscription")
+        body = """<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
+    <SOAP-ENV:Body>
+        <tev:SetSynchronizationPointResponse/>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        return Response(body, mimetype='application/soap+xml')

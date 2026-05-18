@@ -415,6 +415,46 @@ def create_web_app(manager):
             return jsonify(camera.to_dict())
         return jsonify({'error': 'Camera not found'}), 404
 
+    @app.route('/api/cameras/<int:camera_id>/motion/start', methods=['POST'])
+    @login_required
+    def trigger_motion_start(camera_id):
+        """Synthetic motion trigger: emit ONVIF motion-on event for this camera.
+
+        Lets users validate the NVR's ONVIF subscription/event ingestion without
+        depending on a working motion detector. Also used by automated tests.
+        """
+        camera = manager.get_camera(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera not found'}), 404
+        if camera.status != "running":
+            return jsonify({'error': 'Camera is not running'}), 400
+        from .motion_controller import get_motion_controller
+        state = get_motion_controller().set_motion(camera, True, source='synthetic', immediate=True)
+        return jsonify({'cameraId': camera.id, 'motion': state, 'source': 'synthetic'})
+
+    @app.route('/api/cameras/<int:camera_id>/motion/stop', methods=['POST'])
+    @login_required
+    def trigger_motion_stop(camera_id):
+        """Synthetic motion clear: emit ONVIF motion-off event for this camera."""
+        camera = manager.get_camera(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera not found'}), 404
+        if camera.status != "running":
+            return jsonify({'error': 'Camera is not running'}), 400
+        from .motion_controller import get_motion_controller
+        state = get_motion_controller().set_motion(camera, False, source='synthetic', immediate=True)
+        return jsonify({'cameraId': camera.id, 'motion': state, 'source': 'synthetic'})
+
+    @app.route('/api/cameras/<int:camera_id>/motion/state', methods=['GET'])
+    @login_required
+    def motion_state(camera_id):
+        """Report the current debounced motion state for this camera."""
+        camera = manager.get_camera(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera not found'}), 404
+        from .motion_controller import get_motion_controller
+        return jsonify({'cameraId': camera.id, 'motion': get_motion_controller().get_state(camera.id)})
+
     @app.route('/api/cameras/start-all', methods=['POST'])
     @login_required
     def start_all():
