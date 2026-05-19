@@ -3416,6 +3416,27 @@ def get_web_ui_html(current_settings=None):
         let motionSnapshotImg = null;    // current snapshot Image
         let motionMousePos = null;       // last mouse position while drawing (normalized)
 
+        // Distinct color palette for zones. Each zone (regardless of type) gets
+        // a unique color so the user can visually associate the canvas polygon
+        // with its row in the zones list. Type (include/exclude) is still
+        // conveyed by the text label.
+        const MOTION_ZONE_PALETTE = [
+            {{stroke: '#e53e3e', fill: 'rgba(229, 62, 62, 0.28)'}},    // red
+            {{stroke: '#3182ce', fill: 'rgba(49, 130, 206, 0.28)'}},   // blue
+            {{stroke: '#38a169', fill: 'rgba(56, 161, 105, 0.28)'}},   // green
+            {{stroke: '#d69e2e', fill: 'rgba(214, 158, 46, 0.28)'}},   // amber
+            {{stroke: '#805ad5', fill: 'rgba(128, 90, 213, 0.28)'}},   // purple
+            {{stroke: '#319795', fill: 'rgba(49, 151, 149, 0.28)'}},   // teal
+            {{stroke: '#d53f8c', fill: 'rgba(213, 63, 140, 0.28)'}},   // pink
+            {{stroke: '#dd6b20', fill: 'rgba(221, 107, 32, 0.28)'}},   // orange
+            {{stroke: '#2c5282', fill: 'rgba(44, 82, 130, 0.28)'}},    // navy
+            {{stroke: '#9b2c2c', fill: 'rgba(155, 44, 44, 0.28)'}},    // dark red
+        ];
+
+        function motionZoneColor(index) {{
+            return MOTION_ZONE_PALETTE[index % MOTION_ZONE_PALETTE.length];
+        }}
+
         function toggleMotionUi() {{
             const enabled = document.getElementById('motionEnabled').checked;
             document.getElementById('motion-settings-panel').style.display = enabled ? 'block' : 'none';
@@ -3526,17 +3547,20 @@ def get_web_ui_html(current_settings=None):
                 ctx.font = '13px sans-serif';
                 ctx.fillText('No snapshot loaded', 12, 24);
             }}
-            // Existing zones
+            // Existing zones — each gets its own palette color
             motionZones.forEach((z, i) => {{
-                motionDrawPolygon(ctx, z.polygon, z.exclude, false, W, H);
+                const color = motionZoneColor(i);
+                motionDrawPolygon(ctx, z.polygon, color, false, W, H);
             }});
-            // Polygon currently being drawn
+            // Polygon currently being drawn — preview in the color this zone
+            // will get if committed (= the next index in the palette)
             if (motionDrawMode && motionCurrentPolygon.length > 0) {{
-                motionDrawPolygon(ctx, motionCurrentPolygon, motionDrawMode === 'exclude', true, W, H);
+                const pendingColor = motionZoneColor(motionZones.length);
+                motionDrawPolygon(ctx, motionCurrentPolygon, pendingColor, true, W, H);
                 // Preview line to current mouse position
                 if (motionMousePos) {{
                     const last = motionCurrentPolygon[motionCurrentPolygon.length - 1];
-                    ctx.strokeStyle = motionDrawMode === 'exclude' ? '#fc8181' : '#68d391';
+                    ctx.strokeStyle = pendingColor.stroke;
                     ctx.lineWidth = 1.5;
                     ctx.setLineDash([4, 4]);
                     ctx.beginPath();
@@ -3548,24 +3572,22 @@ def get_web_ui_html(current_settings=None):
             }}
         }}
 
-        function motionDrawPolygon(ctx, polygon, isExclude, isInProgress, W, H) {{
+        function motionDrawPolygon(ctx, polygon, color, isInProgress, W, H) {{
             if (polygon.length === 0) return;
-            const stroke = isExclude ? '#e53e3e' : '#38a169';
-            const fill = isExclude ? 'rgba(229, 62, 62, 0.25)' : 'rgba(56, 161, 105, 0.25)';
             ctx.beginPath();
             polygon.forEach((p, i) => {{
                 const x = p[0] * W, y = p[1] * H;
                 if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
             }});
             if (!isInProgress) ctx.closePath();
-            ctx.fillStyle = fill;
+            ctx.fillStyle = color.fill;
             if (!isInProgress) ctx.fill();
-            ctx.strokeStyle = stroke;
+            ctx.strokeStyle = color.stroke;
             ctx.lineWidth = 2;
             ctx.stroke();
-            // Vertex dots
+            // Vertex dots in the same color
             polygon.forEach(p => {{
-                ctx.fillStyle = stroke;
+                ctx.fillStyle = color.stroke;
                 ctx.beginPath();
                 ctx.arc(p[0] * W, p[1] * H, 3, 0, Math.PI * 2);
                 ctx.fill();
@@ -3684,10 +3706,13 @@ def get_web_ui_html(current_settings=None):
                 return;
             }}
             list.innerHTML = motionZones.map((z, i) => {{
-                const color = z.exclude ? '#e53e3e' : '#38a169';
+                // Same per-index palette color as the canvas, so users can
+                // visually match each row to its polygon. Type (include vs
+                // exclude) is shown in the text label.
+                const dot = motionZoneColor(i).stroke;
                 const opacity = z.enabled ? '1' : '0.4';
                 return `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(0,0,0,0.04); border-radius: 4px; margin-bottom: 4px; opacity: ${{opacity}};">
-                    <span style="width: 10px; height: 10px; background: ${{color}}; border-radius: 50%;"></span>
+                    <span style="width: 12px; height: 12px; background: ${{dot}}; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0;"></span>
                     <span style="flex: 1; font-size: 13px;">${{z.name}} <small style="color: #718096;">(${{z.exclude ? 'exclude' : 'include'}}, ${{z.polygon.length}} pts)</small></span>
                     <button type="button" class="btn btn-secondary" onclick="motionZoneRename(${{i}})" style="font-size: 11px; padding: 2px 8px;" title="Rename"><i class="fas fa-pen"></i></button>
                     <button type="button" class="btn btn-secondary" onclick="motionZoneCopyOpen(${{i}})" style="font-size: 11px; padding: 2px 8px;" title="Copy this zone to other cameras"><i class="fas fa-copy"></i></button>
