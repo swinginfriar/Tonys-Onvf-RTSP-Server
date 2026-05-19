@@ -587,6 +587,7 @@ def create_web_app(manager):
                 'enabled': lambda v: bool(v),
                 'model': lambda v: str(v),
                 'min_confidence': lambda v: max(0.0, min(1.0, float(v))),
+                'stream': lambda v: 'main' if str(v).lower() == 'main' else 'sub',
             }
             for k, coerce in cls_coercions.items():
                 if k in cls_in:

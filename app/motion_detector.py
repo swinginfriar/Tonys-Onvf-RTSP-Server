@@ -113,13 +113,22 @@ class MotionWorker:
         cls_model = cls_cfg.get('model') or 'yolov8s'
         cls_min_conf = float(cls_cfg.get('min_confidence', 0.4))
         cls_classes = list(cls_cfg.get('classes') or [])
+        # 'sub' (default): classify the existing 640px sub-stream frame already
+        #   in memory. Fast (~0ms extra capture cost). Bad at distant/small subjects.
+        # 'main': capture a fresh full-resolution main-stream frame when
+        #   classification fires. Adds ~500-1000ms latency per event but
+        #   the higher resolution dramatically improves recall on distant subjects.
+        cls_stream = (cls_cfg.get('stream') or 'sub').lower()
+        if cls_stream not in ('sub', 'main'):
+            cls_stream = 'sub'
         classifier = None
         if cls_enabled:
             try:
                 from .classifier import get_classifier
                 classifier = get_classifier(cls_model)
                 print(f"  [Motion] {self.camera.name}: classification ON ({cls_model}, "
-                      f"min_conf={cls_min_conf}, classes={cls_classes or 'ALL'})")
+                      f"stream={cls_stream}, min_conf={cls_min_conf}, "
+                      f"classes={cls_classes or 'ALL'})")
             except Exception as e:
                 print(f"  [Motion] {self.camera.name}: classifier failed to load — disabling: {e}")
                 classifier = None
@@ -186,9 +195,19 @@ class MotionWorker:
                 continue
 
             # First motion frame for this event with classification on — classify.
+            # If the user opted into the main stream for classification, pull a
+            # fresh high-res frame; otherwise classify the sub-stream frame we
+            # already have in memory.
             try:
+                if cls_stream == 'main':
+                    cls_frame = self._capture_main_frame(cv2)
+                    if cls_frame is None:
+                        # Capture failed — fall back to sub frame so we don't lose the event
+                        cls_frame = frame_bgr
+                else:
+                    cls_frame = frame_bgr
                 passed, top_class, dets = classifier.classify(
-                    frame_bgr, cls_classes, cls_min_conf,
+                    cls_frame, cls_classes, cls_min_conf,
                 )
             except Exception as e:
                 print(f"  [Motion] {self.camera.name}: classifier error: {e}")
@@ -272,12 +291,19 @@ class MotionWorker:
         scale_h = max(2, int(src_h * scale_w / src_w))
         return scale_w, scale_h
 
-    def _build_stream_url(self):
-        """Construct the MediaMTX local substream URL."""
+    def _build_stream_url(self, stream='sub'):
+        """Construct a MediaMTX local stream URL for this camera.
+
+        stream='sub' (default) maps to <path>_sub; 'main' maps to <path>_main.
+        If the camera has the sub-stream disabled, both fall back to main
+        (since that's the only stream available).
+        """
         manager = getattr(self.camera, 'manager', None)
         rtsp_port = getattr(manager, 'rtsp_port', 8554) if manager else 8554
-        # Use sub-stream if available, else main
-        suffix = "_sub" if not getattr(self.camera, 'disable_substream', False) else "_main"
+        if getattr(self.camera, 'disable_substream', False):
+            suffix = '_main'
+        else:
+            suffix = '_main' if stream == 'main' else '_sub'
         path = f"{self.camera.path_name}{suffix}"
 
         if manager and getattr(manager, 'rtsp_auth_enabled', False):
@@ -285,6 +311,31 @@ class MotionWorker:
             pwd = quote(getattr(manager, 'global_password', 'admin') or 'admin', safe='')
             return f"rtsp://{user}:{pwd}@127.0.0.1:{rtsp_port}/{path}"
         return f"rtsp://127.0.0.1:{rtsp_port}/{path}"
+
+    def _capture_main_frame(self, cv2):
+        """Grab a single full-resolution main-stream frame for classification.
+
+        Uses the same FFmpegManager.capture_snapshot path as /onvif/snapshot —
+        cold ffmpeg start, ~500-1000ms typical latency. Worth it for distant
+        subjects since main resolution gives the model ~9x the pixel density.
+        Returns a BGR numpy array, or None on failure.
+        """
+        import os, tempfile
+        from .ffmpeg_manager import FFmpegManager
+        url = self._build_stream_url(stream='main')
+        fd, path = tempfile.mkstemp(suffix='.jpg')
+        os.close(fd)
+        try:
+            ok, _err = FFmpegManager().capture_snapshot(url, path, timeout=8)
+            if not ok:
+                return None
+            return cv2.imread(path)
+        finally:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
 
     def _build_ffmpeg_cmd(self, url, scale_w, scale_h, fps):
         ffmpeg = FFmpegManager().get_ffmpeg_path()

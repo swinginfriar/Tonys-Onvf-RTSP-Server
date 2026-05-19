@@ -1824,17 +1824,39 @@ def get_web_ui_html(current_settings=None):
 
                             <div id="motion-class-settings-panel" style="display: none; margin-top: 14px;">
                                 <small style="color: #718096; font-size: 11px; display: block; margin-bottom: 12px;">
-                                    Classification only runs when motion is already detected by the pixel-change analysis above &mdash;
-                                    so it costs nothing during quiet periods. When motion fires, the worker grabs the frame, runs the
-                                    YOLO model, and only sends the ONVIF event to your NVR if a detection above the confidence
-                                    threshold matches one of your selected classes. This filters out shadows, lighting changes,
-                                    wind in foliage, and other non-relevant motion.
+                                    <strong>How this works.</strong> Pixel-change motion detection (above) still runs continuously
+                                    at almost no cost. When it sees motion, the worker grabs a frame, runs the YOLO model, and
+                                    <em>only</em> sends the ONVIF event to your NVR if a detection above the confidence threshold
+                                    matches one of your selected classes. This filters out shadows, lighting changes, wind in
+                                    foliage, and other non-relevant motion before it reaches your timeline.
                                 </small>
 
-                                <div class="form-group" style="margin-bottom: 12px;">
+                                <div class="form-group" style="margin-bottom: 14px;">
                                     <label class="form-label" style="font-size: 12px;">Model</label>
                                     <select class="form-input" id="motionClassModel" onchange="updateMotionClassModelDescription()" style="font-size: 13px;"></select>
                                     <small id="motionClassModelDescription" style="color: #718096; font-size: 11px; display: block; margin-top: 6px; line-height: 1.5;"></small>
+                                    <small style="color: #718096; font-size: 11px; display: block; margin-top: 4px; line-height: 1.5;">
+                                        <strong>When to switch models:</strong> Start with the recommended one. If you see too many
+                                        false positives or missed detections, the bigger model usually helps. The cost only matters
+                                        when something is moving &mdash; idle cameras pay nothing.
+                                    </small>
+                                </div>
+
+                                <div class="form-group" style="margin-bottom: 14px;">
+                                    <label class="form-label" style="font-size: 12px;">Classification Stream</label>
+                                    <select class="form-input" id="motionClassStream" style="font-size: 13px;">
+                                        <option value="sub">Sub stream (fast, lower resolution)</option>
+                                        <option value="main">Main stream (slower, full resolution)</option>
+                                    </select>
+                                    <small style="color: #718096; font-size: 11px; display: block; margin-top: 6px; line-height: 1.5;">
+                                        <strong>Sub:</strong> Classifies the 640px-wide frame already used for motion detection.
+                                        Essentially zero overhead, good for cameras pointed at close subjects (driveway, doorway,
+                                        garage). Distant subjects appear too small for the model to recognize reliably.<br>
+                                        <strong>Main:</strong> Grabs a fresh full-resolution frame from the main RTSP stream when
+                                        classification fires. Adds ~0.5&ndash;1 second of latency per event but dramatically
+                                        improves detection of small or distant subjects (e.g. a person 50ft from the camera).
+                                        Recommended for wide outdoor views and parking lots.
+                                    </small>
                                 </div>
 
                                 <div class="form-group" style="margin-bottom: 14px;">
@@ -1843,12 +1865,24 @@ def get_web_ui_html(current_settings=None):
                                         <span style="font-weight: 400; color: #718096;"><span id="motionClassConfLabel">0.40</span></span>
                                     </label>
                                     <input type="range" id="motionClassMinConf" min="0.1" max="0.9" step="0.05" value="0.4" style="width: 100%;" oninput="document.getElementById('motionClassConfLabel').textContent = parseFloat(this.value).toFixed(2);">
-                                    <small style="color: #718096; font-size: 11px;">Lower = more detections (more false positives). 0.4 is a good starting point.</small>
+                                    <small style="color: #718096; font-size: 11px; display: block; margin-top: 4px; line-height: 1.5;">
+                                        How sure the model has to be before it counts as a match.
+                                        <strong>0.4&ndash;0.6 (default):</strong> good balance.
+                                        <strong>0.25&ndash;0.4:</strong> catches more borderline detections (distant or partial subjects)
+                                        at the cost of occasional false positives.
+                                        <strong>0.6+:</strong> very strict; only obvious detections trigger.
+                                        Pair lower confidence with the main stream for best small-subject recall.
+                                    </small>
                                 </div>
 
                                 <div>
                                     <label class="form-label" style="font-size: 12px;">Classes to detect</label>
-                                    <small style="color: #718096; font-size: 11px; display: block; margin-bottom: 8px;">Motion will only be reported when one of these is detected.</small>
+                                    <small style="color: #718096; font-size: 11px; display: block; margin-bottom: 8px; line-height: 1.5;">
+                                        Motion will only be reported when one of these is detected. Pick what matters for this
+                                        camera's view &mdash; a driveway probably wants people + vehicles; a backyard might want
+                                        people + pets. Anything <em>not</em> selected (birds, "umbrella", etc.) is suppressed
+                                        even when the model recognizes it correctly.
+                                    </small>
                                     <div id="motionClassClassList" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.05); max-height: 220px; overflow-y: auto;"></div>
                                 </div>
                             </div>
@@ -3678,6 +3712,7 @@ def get_web_ui_html(current_settings=None):
                 classification: {{
                     enabled: document.getElementById('motionClassEnabled').checked,
                     model: document.getElementById('motionClassModel').value || 'yolov8s',
+                    stream: document.getElementById('motionClassStream').value || 'sub',
                     min_confidence: parseFloat(document.getElementById('motionClassMinConf').value || '0.4'),
                     classes: selectedClasses,
                 }},
@@ -3734,6 +3769,10 @@ def get_web_ui_html(current_settings=None):
             const chosenModel = (currentCfg && currentCfg.model) || (modelMeta && modelMeta.default_model) || 'yolov8s';
             sel.value = chosenModel;
             updateMotionClassModelDescription();
+
+            // Stream choice
+            const chosenStream = (currentCfg && currentCfg.stream) || 'sub';
+            document.getElementById('motionClassStream').value = chosenStream;
 
             // Confidence
             const conf = (currentCfg && currentCfg.min_confidence != null) ? currentCfg.min_confidence : 0.4;
