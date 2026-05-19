@@ -44,7 +44,7 @@ MODELS = {
     },
 }
 
-DEFAULT_MODEL = 'yolov8s'
+DEFAULT_MODEL = 'yolov8n'
 
 # COCO class names that the YOLOv8 models can detect, grouped for the UI.
 # The keys are display group names; values are class names from COCO-80.
