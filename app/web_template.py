@@ -1812,7 +1812,28 @@ def get_web_ui_html(current_settings=None):
             </form>
         </div>
     </div>
-    
+
+    <div id="zone-copy-modal" class="modal">
+        <div class="modal-content" style="max-width: 560px;">
+            <div class="modal-header">
+                <div class="modal-title">Copy Zone to Other Cameras</div>
+                <button class="close-btn" onclick="motionZoneCopyClose()">×</button>
+            </div>
+            <div id="zone-copy-summary" style="margin-bottom: 14px;"></div>
+            <div style="background: rgba(0,0,0,0.04); padding: 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); max-height: 360px; overflow-y: auto;">
+                <label style="display: flex; align-items: center; gap: 8px; margin: 0 0 10px 0; padding-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.06); font-weight: 600;">
+                    <input type="checkbox" id="zone-copy-select-all" onchange="motionZoneCopyToggleAll()">
+                    Select All
+                </label>
+                <div id="zone-copy-camera-list"></div>
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end;">
+                <button type="button" class="btn btn-secondary" onclick="motionZoneCopyClose()">Cancel</button>
+                <button type="button" class="btn btn-success" id="zone-copy-confirm-btn" onclick="motionZoneCopyConfirm()">Copy Zone</button>
+            </div>
+        </div>
+    </div>
+
     <div id="settings-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -3548,6 +3569,7 @@ def get_web_ui_html(current_settings=None):
                 return `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(0,0,0,0.04); border-radius: 4px; margin-bottom: 4px; opacity: ${{opacity}};">
                     <span style="width: 10px; height: 10px; background: ${{color}}; border-radius: 50%;"></span>
                     <span style="flex: 1; font-size: 13px;">${{z.name}} <small style="color: #718096;">(${{z.exclude ? 'exclude' : 'include'}}, ${{z.polygon.length}} pts)</small></span>
+                    <button type="button" class="btn btn-secondary" onclick="motionZoneCopyOpen(${{i}})" style="font-size: 11px; padding: 2px 8px;" title="Copy this zone to other cameras"><i class="fas fa-copy"></i></button>
                     <button type="button" class="btn btn-secondary" onclick="motionZoneToggle(${{i}})" style="font-size: 11px; padding: 2px 8px;">${{z.enabled ? 'Disable' : 'Enable'}}</button>
                     <button type="button" class="btn btn-secondary" onclick="motionZoneRemove(${{i}})" style="font-size: 11px; padding: 2px 8px;"><i class="fas fa-trash"></i></button>
                 </div>`;
@@ -3588,6 +3610,109 @@ def get_web_ui_html(current_settings=None):
                 console.warn('motion config save error:', e);
                 return false;
             }}
+        }}
+
+        // ===== Zone copy-to-cameras =====
+        let motionZoneCopySource = null;
+
+        function motionZoneCopyOpen(index) {{
+            const zone = motionZones[index];
+            if (!zone) return;
+            const sourceCamId = document.getElementById('camera-id').value;
+            if (!sourceCamId) {{
+                alert('Save this camera first, then you can copy zones from it.');
+                return;
+            }}
+            // Snapshot the zone so concurrent edits to motionZones don't mutate it
+            motionZoneCopySource = JSON.parse(JSON.stringify(zone));
+
+            document.getElementById('zone-copy-summary').innerHTML = `
+                <p style="margin: 0 0 6px 0;">Copy the <strong>${{zone.exclude ? 'exclude' : 'include'}} zone "${{zone.name}}"</strong> to other cameras.</p>
+                <p style="margin: 0; font-size: 12px; color: #718096;">Each target camera's existing zones are preserved. If a zone with the same name already exists, it will be replaced.</p>
+            `;
+
+            const list = document.getElementById('zone-copy-camera-list');
+            const items = (cameras || [])
+                .filter(c => String(c.id) !== String(sourceCamId))
+                .map(c => {{
+                    const m = c.motion || {{}};
+                    const zoneCount = (m.zones || []).length;
+                    const motionStatus = m.enabled ? 'motion on' : 'motion off';
+                    const statusColor = m.enabled ? '#38a169' : '#718096';
+                    return `<label style="display: flex; align-items: center; gap: 8px; padding: 5px 4px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04);">
+                        <input type="checkbox" class="zone-copy-cam" value="${{c.id}}">
+                        <span style="flex: 1; font-size: 13px;">${{c.name}} <small style="color: ${{statusColor}};">(${{motionStatus}}, ${{zoneCount}} zone${{zoneCount === 1 ? '' : 's'}})</small></span>
+                    </label>`;
+                }});
+            list.innerHTML = items.length ? items.join('') : '<small style="color: #718096;">No other cameras available.</small>';
+            document.getElementById('zone-copy-select-all').checked = false;
+            const btn = document.getElementById('zone-copy-confirm-btn');
+            btn.disabled = false;
+            btn.innerHTML = 'Copy Zone';
+
+            document.getElementById('zone-copy-modal').classList.add('active');
+        }}
+
+        function motionZoneCopyToggleAll() {{
+            const checked = document.getElementById('zone-copy-select-all').checked;
+            document.querySelectorAll('.zone-copy-cam').forEach(cb => {{ cb.checked = checked; }});
+        }}
+
+        function motionZoneCopyClose() {{
+            document.getElementById('zone-copy-modal').classList.remove('active');
+            motionZoneCopySource = null;
+        }}
+
+        async function motionZoneCopyConfirm() {{
+            if (!motionZoneCopySource) return;
+            const checks = document.querySelectorAll('.zone-copy-cam:checked');
+            const targets = Array.from(checks).map(c => c.value);
+            if (targets.length === 0) {{
+                alert('Select at least one target camera.');
+                return;
+            }}
+            if (!confirm(`Add zone "${{motionZoneCopySource.name}}" to ${{targets.length}} camera${{targets.length === 1 ? '' : 's'}}? Existing zones with the same name will be replaced.`)) return;
+
+            const btn = document.getElementById('zone-copy-confirm-btn');
+            btn.disabled = true;
+            let okCount = 0, failCount = 0;
+
+            for (let i = 0; i < targets.length; i++) {{
+                const targetId = targets[i];
+                btn.innerHTML = `Copying... (${{i + 1}}/${{targets.length}})`;
+                try {{
+                    const getResp = await fetch(`/api/cameras/${{targetId}}/motion/config`);
+                    if (!getResp.ok) {{ failCount++; continue; }}
+                    const data = await getResp.json();
+                    const existingZones = ((data.motion || {{}}).zones || []).slice();
+                    const newZone = JSON.parse(JSON.stringify(motionZoneCopySource));
+                    const existingIdx = existingZones.findIndex(z => z.name === newZone.name);
+                    if (existingIdx >= 0) {{
+                        existingZones[existingIdx] = newZone;
+                    }} else {{
+                        existingZones.push(newZone);
+                    }}
+                    const putResp = await fetch(`/api/cameras/${{targetId}}/motion/config`, {{
+                        method: 'PUT',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{zones: existingZones}}),
+                    }});
+                    if (putResp.ok) okCount++; else failCount++;
+                }} catch (e) {{
+                    console.warn('copy to', targetId, 'failed:', e);
+                    failCount++;
+                }}
+            }}
+
+            btn.disabled = false;
+            btn.innerHTML = 'Copy Zone';
+            motionZoneCopyClose();
+            const msg = failCount > 0
+                ? `Done: ${{okCount}} succeeded, ${{failCount}} failed. Check console for details.`
+                : `Done — copied to ${{okCount}} camera${{okCount === 1 ? '' : 's'}}.`;
+            alert(msg);
+            // Refresh main camera list so zone counts show updated values
+            if (typeof loadData === 'function') loadData();
         }}
 
         // Wire canvas events once at script load
