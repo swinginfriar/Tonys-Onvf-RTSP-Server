@@ -3297,7 +3297,7 @@ def get_web_ui_html(current_settings=None):
         // any resolution change. The canvas is fixed at 640x360 internally
         // and CSS-scales for display; we convert clicks to normalized coords.
 
-        let motionZones = [];           // [{name, enabled, exclude, polygon: [[x,y],...]}]
+        let motionZones = [];           // each: name, enabled, exclude, polygon (array of [x,y] normalized pts)
         let motionDrawMode = null;       // 'include' | 'exclude' | null
         let motionCurrentPolygon = [];   // points being drawn, normalized
         let motionSnapshotImg = null;    // current snapshot Image
