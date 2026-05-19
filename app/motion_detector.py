@@ -157,6 +157,13 @@ class MotionWorker:
         # one frame of a motion event has been classified as a wanted class.
         # Once fired, we stop re-classifying for this event until motion stops.
         classified_for_event = False
+        # Event-hold: after firing motion=true, we hold that state for at
+        # least N seconds even if scene motion stops earlier. This makes the
+        # marker on the NVR's timeline long enough to actually click on.
+        # Duration is from camera.motion.min_event_duration_ms, scaled up by
+        # classification confidence (higher confidence -> longer hold).
+        base_hold_s = max(0.0, int(self.cfg.get('min_event_duration_ms', 5000))) / 1000.0
+        event_min_end_time = 0.0
 
         while not self._stop_event.is_set():
             buf = self._read_exact(self._ffmpeg_proc.stdout, frame_bytes)
@@ -175,18 +182,27 @@ class MotionWorker:
                 consecutive = 0
 
             raw_motion = consecutive >= min_motion_frames
+            now = time.time()
 
             if not raw_motion:
-                # Motion has cleared — fire OFF (idempotent) and reset
-                # classification state for the next event.
+                # Scene motion has stopped — but if we're still inside the
+                # min-event-duration window, keep holding motion=TRUE so the
+                # NVR timeline marker stays a meaningful length.
+                if event_min_end_time > 0 and now < event_min_end_time:
+                    controller.set_motion(self.camera, True, source='detector:hold')
+                    continue
+                # Past the hold window — fire OFF (idempotent) and reset state.
                 controller.set_motion(self.camera, False, source='detector')
                 classified_for_event = False
+                event_min_end_time = 0.0
                 continue
 
             # raw_motion == True
             if classifier is None:
-                # No classification — fire normally (current behavior).
+                # No classification — fire normally with the base hold duration.
                 controller.set_motion(self.camera, True, source='detector')
+                if event_min_end_time == 0.0:
+                    event_min_end_time = now + base_hold_s
                 continue
 
             if classified_for_event:
@@ -211,10 +227,26 @@ class MotionWorker:
                 )
             except Exception as e:
                 print(f"  [Motion] {self.camera.name}: classifier error: {e}")
-                passed, top_class = False, None
+                passed, top_class, dets = False, None, []
 
             if passed:
-                print(f"  [Motion] {self.camera.name}: classified as '{top_class}' — firing event")
+                # Scale the hold duration by classification confidence so a
+                # high-confidence "definitely a person" event lasts longer on
+                # the timeline than a marginal one. Bands chosen empirically:
+                #   conf >= 0.80 -> 2.5x base
+                #   conf >= 0.65 -> 1.5x base
+                #   else         -> 1.0x base
+                top_conf = float(dets[0]['conf']) if dets else 0.0
+                if top_conf >= 0.80:
+                    mult = 2.5
+                elif top_conf >= 0.65:
+                    mult = 1.5
+                else:
+                    mult = 1.0
+                hold_s = base_hold_s * mult
+                event_min_end_time = now + hold_s
+                print(f"  [Motion] {self.camera.name}: classified as '{top_class}' "
+                      f"(conf={top_conf:.2f}) — firing event (hold {hold_s:.1f}s)")
                 controller.set_motion(self.camera, True, source=f'detector:{top_class}')
                 classified_for_event = True
             # If classification failed, do NOT fire. Next motion frame will

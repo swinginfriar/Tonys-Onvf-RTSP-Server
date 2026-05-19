@@ -109,8 +109,15 @@ class MotionController:
 
     def _emit(self, camera, is_motion, source):
         bus = get_event_bus()
-        bus.publish(camera.id, TOPIC_CELL_MOTION, {"IsMotion": is_motion})
-        bus.publish(camera.id, TOPIC_MOTION_ALARM, {"State": is_motion})
+        # Optional pre-buffer: backdate the ON event's UtcTime so the NVR's
+        # timeline marker starts a moment before the actual motion frame.
+        # Apply only on the ON edge — OFF events use "now" so the marker's
+        # END isn't pulled into the past (which would shorten the marker).
+        cfg = getattr(camera, 'motion', None) or {}
+        pre_buffer_s = float(cfg.get('pre_buffer_ms', 1000)) / 1000.0
+        utc_time = time.time() - pre_buffer_s if is_motion else time.time()
+        bus.publish(camera.id, TOPIC_CELL_MOTION, {"IsMotion": is_motion}, utc_time=utc_time)
+        bus.publish(camera.id, TOPIC_MOTION_ALARM, {"State": is_motion}, utc_time=utc_time)
         verb = "STARTED" if is_motion else "STOPPED"
         print(f"  [Motion] {camera.name}: motion {verb} (source={source})")
 

@@ -76,12 +76,17 @@ class EventBus:
             self._next_event_id[camera_id] = 0
             self._camera_conds[camera_id] = threading.Condition(self._lock)
 
-    def publish(self, camera_id, topic, data):
-        """Add an event for this camera and wake any blocked PullMessages calls."""
+    def publish(self, camera_id, topic, data, utc_time=None):
+        """Add an event for this camera and wake any blocked PullMessages calls.
+
+        utc_time is optional — caller can pass a specific UTC epoch timestamp
+        to backdate (or future-date) the event, which controls where the
+        event lands on the NVR's timeline. Defaults to "now" when omitted.
+        """
         with self._lock:
             self._ensure_camera(camera_id)
             self._next_event_id[camera_id] += 1
-            event = Event(camera_id, topic, data)
+            event = Event(camera_id, topic, data, utc_time=utc_time)
             event.id = self._next_event_id[camera_id]
             self._events[camera_id].append(event)
             self._camera_conds[camera_id].notify_all()

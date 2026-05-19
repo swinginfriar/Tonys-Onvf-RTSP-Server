@@ -1754,7 +1754,7 @@ def get_web_ui_html(current_settings=None):
                                         <small style="color: #718096; font-size: 11px;">Frames above threshold before motion triggers</small>
                                     </div>
                                 </div>
-                                <div class="form-row" style="gap: 12px; margin-bottom: 0;">
+                                <div class="form-row" style="gap: 12px; margin-bottom: 12px;">
                                     <div class="form-group" style="flex: 1; margin-bottom: 0;">
                                         <label class="form-label" style="font-size: 12px;">On Delay (ms)</label>
                                         <input type="number" class="form-input" id="motionAlarmOnDelayMs" value="500" min="0" max="10000" step="100">
@@ -1764,6 +1764,18 @@ def get_web_ui_html(current_settings=None):
                                         <label class="form-label" style="font-size: 12px;">Off Delay (ms)</label>
                                         <input type="number" class="form-input" id="motionAlarmOffDelayMs" value="3000" min="0" max="60000" step="100">
                                         <small style="color: #718096; font-size: 11px;">Quiet period before motion-off event fires</small>
+                                    </div>
+                                </div>
+                                <div class="form-row" style="gap: 12px; margin-bottom: 0;">
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label class="form-label" style="font-size: 12px;">Pre-Buffer (ms)</label>
+                                        <input type="number" class="form-input" id="motionPreBufferMs" value="1000" min="0" max="10000" step="100">
+                                        <small style="color: #718096; font-size: 11px; line-height: 1.4;">Backdates the motion event's timestamp by this much so the NVR's timeline marker starts a moment before the actual motion. 1000ms is enough headroom to see the lead-in to the event without making the marker drift away from reality.</small>
+                                    </div>
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label class="form-label" style="font-size: 12px;">Min Event Duration (ms)</label>
+                                        <input type="number" class="form-input" id="motionMinEventDurationMs" value="5000" min="0" max="60000" step="500">
+                                        <small style="color: #718096; font-size: 11px; line-height: 1.4;">Holds motion-on for at least this long after firing, so the timeline marker is large enough to actually click. <strong>Scales with classification confidence:</strong> ≥0.65&nbsp;→&nbsp;1.5×, ≥0.80&nbsp;→&nbsp;2.5×. Set 0 to disable.</small>
                                     </div>
                                 </div>
                             </div>
@@ -3490,6 +3502,8 @@ def get_web_ui_html(current_settings=None):
             document.getElementById('motionMinMotionFrames').value = 2;
             document.getElementById('motionAlarmOnDelayMs').value = 500;
             document.getElementById('motionAlarmOffDelayMs').value = 3000;
+            document.getElementById('motionPreBufferMs').value = 1000;
+            document.getElementById('motionMinEventDurationMs').value = 5000;
             document.getElementById('motion-settings-panel').style.display = 'none';
             document.getElementById('motionClassEnabled').checked = false;
             document.getElementById('motion-class-settings-panel').style.display = 'none';
@@ -3514,6 +3528,8 @@ def get_web_ui_html(current_settings=None):
                 if (m.min_motion_frames != null) document.getElementById('motionMinMotionFrames').value = m.min_motion_frames;
                 if (m.alarm_on_delay_ms != null) document.getElementById('motionAlarmOnDelayMs').value = m.alarm_on_delay_ms;
                 if (m.alarm_off_delay_ms != null) document.getElementById('motionAlarmOffDelayMs').value = m.alarm_off_delay_ms;
+                if (m.pre_buffer_ms != null) document.getElementById('motionPreBufferMs').value = m.pre_buffer_ms;
+                if (m.min_event_duration_ms != null) document.getElementById('motionMinEventDurationMs').value = m.min_event_duration_ms;
                 motionZones = Array.isArray(m.zones) ? m.zones.map(z => ({{
                     name: z.name || 'zone',
                     enabled: z.enabled !== false,
@@ -3762,6 +3778,8 @@ def get_web_ui_html(current_settings=None):
                 min_motion_frames: parseInt(document.getElementById('motionMinMotionFrames').value || '2', 10),
                 alarm_on_delay_ms: parseInt(document.getElementById('motionAlarmOnDelayMs').value || '500', 10),
                 alarm_off_delay_ms: parseInt(document.getElementById('motionAlarmOffDelayMs').value || '3000', 10),
+                pre_buffer_ms: parseInt(document.getElementById('motionPreBufferMs').value || '1000', 10),
+                min_event_duration_ms: parseInt(document.getElementById('motionMinEventDurationMs').value || '5000', 10),
                 zones: motionZones.map(z => ({{
                     name: z.name,
                     enabled: z.enabled,

@@ -563,6 +563,8 @@ def create_web_app(manager):
             'min_motion_frames': lambda v: max(1, int(v)),
             'alarm_on_delay_ms': lambda v: max(0, int(v)),
             'alarm_off_delay_ms': lambda v: max(0, int(v)),
+            'min_event_duration_ms': lambda v: max(0, int(v)),
+            'pre_buffer_ms': lambda v: max(0, int(v)),
         }
         for k, coerce in coercions.items():
             if k in body:
