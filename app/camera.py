@@ -10,6 +10,7 @@ from .config import MEDIAMTX_PORT
 from .onvif_service import ONVIFService
 from .linux_network import LinuxNetworkManager
 from .utils import get_local_ip
+from . import motion_detector
 
 
 class ThreadPoolWSGIServer(ThreadedWSGIServer):
@@ -92,9 +93,12 @@ class VirtualONVIFCamera:
         self.netmask = config.get('netmask', '24')
         self.gateway = config.get('gateway', '')
         self.debug_mode = config.get('debugMode', False)
+        # Motion detection config. Empty/missing = disabled. Keys: enabled, fps,
+        # min_area_percent, min_motion_frames, alarm_on_delay_ms, alarm_off_delay_ms.
+        self.motion = config.get('motion', {}) or {}
         self.assigned_ip = None
         self.network_mgr = LinuxNetworkManager() if LinuxNetworkManager.is_linux() else None
-        
+
         self.status = "stopped"
         self.flask_app = None
         self.flask_thread = None
@@ -149,11 +153,15 @@ class VirtualONVIFCamera:
             time.sleep(0.5)
         
         self._start_onvif_service()
-        
+        motion_detector.start_worker(self)
+
     def stop(self):
         """Mark camera as stopped, shutdown ONVIF service, and cleanup networking"""
         self.status = "stopped"
-        
+
+        # Stop motion detection first so it clears any in-flight event state
+        motion_detector.stop_worker(self)
+
         # Stop the ONVIF WSGI server safely
         if hasattr(self, 'server') and self.server:
             try:
@@ -265,9 +273,10 @@ class VirtualONVIFCamera:
             'gateway': self.gateway,
             'assignedIp': self.assigned_ip,
             'macAddress': self.mac_address,
-            'debugMode': self.debug_mode
+            'debugMode': self.debug_mode,
+            'motion': self.motion,
         }
-    
+
     def to_config_dict(self):
         """Convert to dictionary for config file (excludes runtime status)"""
         return {
@@ -306,5 +315,6 @@ class VirtualONVIFCamera:
             'staticIp': self.static_ip,
             'netmask': self.netmask,
             'gateway': self.gateway,
-            'debugMode': self.debug_mode
+            'debugMode': self.debug_mode,
+            'motion': self.motion,
         }

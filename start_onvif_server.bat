@@ -100,7 +100,7 @@ choice /C YN /M "Would you like to install them now via pip?"
 if errorlevel 2 (
     echo.
     echo [ERROR] Installation skipped. Please install dependencies manually.
-    echo Run: %PYTHON_CMD% -m pip install flask flask-cors requests pyyaml psutil onvif-zeep
+    echo Run: %PYTHON_CMD% -m pip install flask flask-cors requests pyyaml psutil onvif-zeep opencv-python-headless numpy
     echo.
     pause
     exit /b 1

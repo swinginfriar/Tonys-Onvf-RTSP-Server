@@ -80,7 +80,9 @@ def check_and_install_requirements():
         'requests': 'requests',
         'yaml': 'pyyaml',
         'psutil': 'psutil',
-        'onvif': 'onvif-zeep'
+        'onvif': 'onvif-zeep',
+        'cv2': 'opencv-python-headless',
+        'numpy': 'numpy',
     }
     
     # Check if we need tzdata for timezone support

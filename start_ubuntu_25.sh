@@ -67,11 +67,11 @@ fi
 # 4. Install initial required Python packages
 echo "Checking Python packages..."
 if ! python3 -c "import flask" &> /dev/null; then
-    echo "  Missing core Python packages: flask, flask-cors, requests, pyyaml, psutil, onvif-zeep"
+    echo "  Missing core Python packages: flask, flask-cors, requests, pyyaml, psutil, onvif-zeep, opencv-python-headless, numpy"
     read -p "  Would you like to install them now via pip? (y/n): " confirm
     if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
         echo "  Installing packages..."
-        pip install flask flask-cors requests pyyaml psutil onvif-zeep
+        pip install flask flask-cors requests pyyaml psutil onvif-zeep opencv-python-headless numpy
     else
         echo "  Installation skipped. Please install dependencies manually."
         exit 1
