@@ -1798,6 +1798,61 @@ def get_web_ui_html(current_settings=None):
                                 small zones become proportionally more sensitive.
                             </small>
                         </div>
+
+                        <div id="motion-classification-block" style="margin-top: 16px; background: rgba(0,0,0,0.03); padding: 15px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <div style="background: var(--primary-color); color: white; width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="fas fa-brain"></i>
+                                    </div>
+                                    <div>
+                                        <span class="auto-start-label" style="font-size: 13px; font-weight: 700; color: var(--text-title); display: block; line-height: 1.2;">Object Detection (Classification)</span>
+                                        <small style="color: #718096; font-size: 11px;">Only fire motion events when a wanted object (person, car, etc.) is detected.</small>
+                                    </div>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="motionClassEnabled" onchange="toggleMotionClassUi()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+
+                            <div id="motion-class-install-warning" style="display: none; padding: 10px 12px; background: rgba(214, 158, 46, 0.1); border-left: 3px solid #d69e2e; color: var(--text-title); border-radius: 4px; font-size: 12px; margin-top: 12px;">
+                                <strong>One-time setup required.</strong> Object detection needs the <code>ultralytics</code> Python package (~500MB including PyTorch and the YOLO models). Install it on the proxy server with:<br>
+                                <code id="motion-class-install-cmd" style="display: block; margin: 6px 0; padding: 6px 8px; background: rgba(0,0,0,0.06); border-radius: 3px; font-size: 11px;">pip install ultralytics</code>
+                                Then restart the proxy. The model weights download automatically on first use.
+                            </div>
+
+                            <div id="motion-class-settings-panel" style="display: none; margin-top: 14px;">
+                                <small style="color: #718096; font-size: 11px; display: block; margin-bottom: 12px;">
+                                    Classification only runs when motion is already detected by the pixel-change analysis above &mdash;
+                                    so it costs nothing during quiet periods. When motion fires, the worker grabs the frame, runs the
+                                    YOLO model, and only sends the ONVIF event to your NVR if a detection above the confidence
+                                    threshold matches one of your selected classes. This filters out shadows, lighting changes,
+                                    wind in foliage, and other non-relevant motion.
+                                </small>
+
+                                <div class="form-group" style="margin-bottom: 12px;">
+                                    <label class="form-label" style="font-size: 12px;">Model</label>
+                                    <select class="form-input" id="motionClassModel" onchange="updateMotionClassModelDescription()" style="font-size: 13px;"></select>
+                                    <small id="motionClassModelDescription" style="color: #718096; font-size: 11px; display: block; margin-top: 6px; line-height: 1.5;"></small>
+                                </div>
+
+                                <div class="form-group" style="margin-bottom: 14px;">
+                                    <label class="form-label" style="font-size: 12px; display: flex; justify-content: space-between; align-items: center;">
+                                        <span>Min Confidence</span>
+                                        <span style="font-weight: 400; color: #718096;"><span id="motionClassConfLabel">0.40</span></span>
+                                    </label>
+                                    <input type="range" id="motionClassMinConf" min="0.1" max="0.9" step="0.05" value="0.4" style="width: 100%;" oninput="document.getElementById('motionClassConfLabel').textContent = parseFloat(this.value).toFixed(2);">
+                                    <small style="color: #718096; font-size: 11px;">Lower = more detections (more false positives). 0.4 is a good starting point.</small>
+                                </div>
+
+                                <div>
+                                    <label class="form-label" style="font-size: 12px;">Classes to detect</label>
+                                    <small style="color: #718096; font-size: 11px; display: block; margin-bottom: 8px;">Motion will only be reported when one of these is detected.</small>
+                                    <div id="motionClassClassList" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.05); max-height: 220px; overflow-y: auto;"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -3347,8 +3402,12 @@ def get_web_ui_html(current_settings=None):
             document.getElementById('motionAlarmOnDelayMs').value = 500;
             document.getElementById('motionAlarmOffDelayMs').value = 3000;
             document.getElementById('motion-settings-panel').style.display = 'none';
+            document.getElementById('motionClassEnabled').checked = false;
+            document.getElementById('motion-class-settings-panel').style.display = 'none';
             motionRenderZonesList();
             motionZoneRender();
+            // Populate the classification UI with defaults so it's ready to enable
+            populateMotionClassUi(null);
 
             if (cameraId === '' || cameraId === null || cameraId === undefined) return;
 
@@ -3373,6 +3432,8 @@ def get_web_ui_html(current_settings=None):
                     polygon: (z.polygon || []).map(p => [parseFloat(p[0]), parseFloat(p[1])]),
                 }})) : [];
                 motionRenderZonesList();
+                // Populate classification fields from the camera's saved config
+                await populateMotionClassUi(m.classification || null);
                 if (document.getElementById('motionEnabled').checked) {{
                     document.getElementById('motion-settings-panel').style.display = 'block';
                     motionZoneRefreshSnapshot();
@@ -3600,6 +3661,7 @@ def get_web_ui_html(current_settings=None):
         }}
 
         function motionCollectConfig() {{
+            const selectedClasses = Array.from(document.querySelectorAll('.motion-class-cls:checked')).map(c => c.value);
             return {{
                 enabled: document.getElementById('motionEnabled').checked,
                 fps: parseInt(document.getElementById('motionFps').value || '3', 10),
@@ -3613,7 +3675,110 @@ def get_web_ui_html(current_settings=None):
                     exclude: !!z.exclude,
                     polygon: z.polygon,
                 }})),
+                classification: {{
+                    enabled: document.getElementById('motionClassEnabled').checked,
+                    model: document.getElementById('motionClassModel').value || 'yolov8s',
+                    min_confidence: parseFloat(document.getElementById('motionClassMinConf').value || '0.4'),
+                    classes: selectedClasses,
+                }},
             }};
+        }}
+
+        // ===== Object Detection / Classification UI =====
+        // Cached so we only fetch model + class metadata once per session
+        let motionClassMetaCache = null;
+        let motionClassClassesCache = null;
+
+        async function fetchMotionClassMeta() {{
+            if (motionClassMetaCache && motionClassClassesCache) {{
+                return {{models: motionClassMetaCache, classes: motionClassClassesCache}};
+            }}
+            try {{
+                const [mr, cr] = await Promise.all([
+                    fetch('/api/classifier/models'),
+                    fetch('/api/classifier/classes'),
+                ]);
+                if (mr.ok) motionClassMetaCache = await mr.json();
+                if (cr.ok) motionClassClassesCache = await cr.json();
+            }} catch (e) {{
+                console.warn('classifier meta fetch failed:', e);
+            }}
+            return {{models: motionClassMetaCache, classes: motionClassClassesCache}};
+        }}
+
+        async function populateMotionClassUi(currentCfg) {{
+            const meta = await fetchMotionClassMeta();
+            const modelMeta = meta.models;
+            const classMeta = meta.classes;
+
+            // Install-warning banner — visible when ultralytics isn't installed
+            const warn = document.getElementById('motion-class-install-warning');
+            if (modelMeta && modelMeta.installed === false) {{
+                document.getElementById('motion-class-install-cmd').textContent = modelMeta.install_command || 'pip install ultralytics';
+                warn.style.display = 'block';
+            }} else if (warn) {{
+                warn.style.display = 'none';
+            }}
+
+            // Populate model dropdown
+            const sel = document.getElementById('motionClassModel');
+            sel.innerHTML = '';
+            const models = (modelMeta && modelMeta.models) || [];
+            for (const m of models) {{
+                const opt = document.createElement('option');
+                opt.value = m.name;
+                opt.textContent = m.label || m.name;
+                opt.dataset.description = (m.description || '') + (m.tradeoffs ? ' ' + m.tradeoffs : '');
+                sel.appendChild(opt);
+            }}
+            const chosenModel = (currentCfg && currentCfg.model) || (modelMeta && modelMeta.default_model) || 'yolov8s';
+            sel.value = chosenModel;
+            updateMotionClassModelDescription();
+
+            // Confidence
+            const conf = (currentCfg && currentCfg.min_confidence != null) ? currentCfg.min_confidence : 0.4;
+            document.getElementById('motionClassMinConf').value = conf;
+            document.getElementById('motionClassConfLabel').textContent = parseFloat(conf).toFixed(2);
+
+            // Class checkboxes, grouped by category
+            const enabledClasses = new Set((currentCfg && currentCfg.classes) || (classMeta && classMeta.default_classes) || []);
+            const groups = (classMeta && classMeta.groups) || {{}};
+            const listEl = document.getElementById('motionClassClassList');
+            const parts = [];
+            for (const [groupName, classes] of Object.entries(groups)) {{
+                parts.push(`<div style="font-size: 11px; color: var(--text-title); font-weight: 600; margin: 4px 0;">${{groupName}}</div>`);
+                parts.push('<div style="display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 8px;">');
+                for (const cls of classes) {{
+                    const checked = enabledClasses.has(cls) ? 'checked' : '';
+                    parts.push(`<label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                        <input type="checkbox" class="motion-class-cls" value="${{cls}}" ${{checked}}>
+                        ${{cls}}
+                    </label>`);
+                }}
+                parts.push('</div>');
+            }}
+            listEl.innerHTML = parts.join('');
+
+            // Show/hide settings panel based on enabled state
+            const enabled = !!(currentCfg && currentCfg.enabled);
+            document.getElementById('motionClassEnabled').checked = enabled;
+            document.getElementById('motion-class-settings-panel').style.display = enabled ? 'block' : 'none';
+        }}
+
+        function toggleMotionClassUi() {{
+            const enabled = document.getElementById('motionClassEnabled').checked;
+            document.getElementById('motion-class-settings-panel').style.display = enabled ? 'block' : 'none';
+            // Lazy-populate the panel the first time it's enabled in the modal
+            if (enabled && !document.querySelectorAll('.motion-class-cls').length) {{
+                populateMotionClassUi(null);
+            }}
+        }}
+
+        function updateMotionClassModelDescription() {{
+            const sel = document.getElementById('motionClassModel');
+            const opt = sel.options[sel.selectedIndex];
+            const desc = opt ? (opt.dataset.description || '') : '';
+            document.getElementById('motionClassModelDescription').textContent = desc;
         }}
 
         async function saveMotionConfig(cameraId) {{

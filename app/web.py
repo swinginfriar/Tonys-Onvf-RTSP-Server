@@ -455,6 +455,32 @@ def create_web_app(manager):
         from .motion_controller import get_motion_controller
         return jsonify({'cameraId': camera.id, 'motion': get_motion_controller().get_state(camera.id)})
 
+    @app.route('/api/classifier/models', methods=['GET'])
+    @login_required
+    def classifier_models():
+        """Return available classification models + whether ultralytics is installed.
+
+        The UI uses `installed` to decide whether to show an install prompt
+        instead of letting the user enable classification on a broken setup.
+        """
+        from . import classifier
+        return jsonify({
+            'installed': classifier.is_available(),
+            'install_command': 'pip install ultralytics',
+            'default_model': classifier.DEFAULT_MODEL,
+            'models': classifier.list_models(),
+        })
+
+    @app.route('/api/classifier/classes', methods=['GET'])
+    @login_required
+    def classifier_classes():
+        """Return the grouped COCO class catalog for the UI's checkbox UI."""
+        from . import classifier
+        return jsonify({
+            'default_classes': classifier.DEFAULT_CLASSES,
+            'groups': classifier.list_classes(),
+        })
+
     @app.route('/api/cameras/<int:camera_id>/snapshot', methods=['GET'])
     @login_required
     def admin_snapshot(camera_id):
@@ -549,6 +575,30 @@ def create_web_app(manager):
             if not isinstance(body['zones'], list):
                 return jsonify({'error': 'zones must be a list'}), 400
             existing['zones'] = body['zones']
+
+        # Classification sub-config (optional). Merge field-by-field so the
+        # UI can send partial updates without clobbering unset fields.
+        if 'classification' in body:
+            cls_in = body['classification']
+            if not isinstance(cls_in, dict):
+                return jsonify({'error': 'classification must be an object'}), 400
+            cls_existing = dict(existing.get('classification') or {})
+            cls_coercions = {
+                'enabled': lambda v: bool(v),
+                'model': lambda v: str(v),
+                'min_confidence': lambda v: max(0.0, min(1.0, float(v))),
+            }
+            for k, coerce in cls_coercions.items():
+                if k in cls_in:
+                    try:
+                        cls_existing[k] = coerce(cls_in[k])
+                    except (TypeError, ValueError) as e:
+                        return jsonify({'error': f'Invalid classification.{k}: {e}'}), 400
+            if 'classes' in cls_in:
+                if not isinstance(cls_in['classes'], list):
+                    return jsonify({'error': 'classification.classes must be a list'}), 400
+                cls_existing['classes'] = [str(c) for c in cls_in['classes']]
+            existing['classification'] = cls_existing
 
         camera.motion = existing
         manager.save_config()

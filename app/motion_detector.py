@@ -99,10 +99,30 @@ class MotionWorker:
 
     def _detect_loop(self, cv2, np):
         scale_w, scale_h = self._compute_scale()
-        frame_bytes = scale_w * scale_h
+        # BGR24 = 3 bytes per pixel. We keep the color frame around so the
+        # classifier (if enabled) can use it; MOG2 still runs on a grayscale
+        # conversion of the same frame.
+        frame_bytes = scale_w * scale_h * 3
         fps = max(1, int(self.cfg.get('fps', DEFAULT_FPS)))
         min_area_percent = float(self.cfg.get('min_area_percent', DEFAULT_MIN_AREA_PERCENT))
         min_motion_frames = max(1, int(self.cfg.get('min_motion_frames', DEFAULT_MIN_MOTION_FRAMES)))
+
+        # Resolve classification settings (off by default).
+        cls_cfg = (self.cfg.get('classification') or {})
+        cls_enabled = bool(cls_cfg.get('enabled', False))
+        cls_model = cls_cfg.get('model') or 'yolov8s'
+        cls_min_conf = float(cls_cfg.get('min_confidence', 0.4))
+        cls_classes = list(cls_cfg.get('classes') or [])
+        classifier = None
+        if cls_enabled:
+            try:
+                from .classifier import get_classifier
+                classifier = get_classifier(cls_model)
+                print(f"  [Motion] {self.camera.name}: classification ON ({cls_model}, "
+                      f"min_conf={cls_min_conf}, classes={cls_classes or 'ALL'})")
+            except Exception as e:
+                print(f"  [Motion] {self.camera.name}: classifier failed to load — disabling: {e}")
+                classifier = None
 
         # Build the zone mask once. None = full frame (today's behavior).
         zone_mask = self._build_zone_mask(cv2, np, scale_w, scale_h)
@@ -124,13 +144,18 @@ class MotionWorker:
         )
         controller = get_motion_controller()
         consecutive = 0
+        # When classification is on, we only fire an ONVIF motion event after
+        # one frame of a motion event has been classified as a wanted class.
+        # Once fired, we stop re-classifying for this event until motion stops.
+        classified_for_event = False
 
         while not self._stop_event.is_set():
             buf = self._read_exact(self._ffmpeg_proc.stdout, frame_bytes)
             if buf is None:
                 raise EOFError("ffmpeg pipe closed")
-            frame = np.frombuffer(buf, dtype=np.uint8).reshape(scale_h, scale_w)
-            fg = bg.apply(frame)
+            frame_bgr = np.frombuffer(buf, dtype=np.uint8).reshape(scale_h, scale_w, 3)
+            frame_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            fg = bg.apply(frame_gray)
             if zone_mask is not None:
                 fg = fg * zone_mask
             motion_area = int(cv2.countNonZero(fg))
@@ -140,8 +165,41 @@ class MotionWorker:
             else:
                 consecutive = 0
 
-            is_motion = consecutive >= min_motion_frames
-            controller.set_motion(self.camera, is_motion, source='detector')
+            raw_motion = consecutive >= min_motion_frames
+
+            if not raw_motion:
+                # Motion has cleared — fire OFF (idempotent) and reset
+                # classification state for the next event.
+                controller.set_motion(self.camera, False, source='detector')
+                classified_for_event = False
+                continue
+
+            # raw_motion == True
+            if classifier is None:
+                # No classification — fire normally (current behavior).
+                controller.set_motion(self.camera, True, source='detector')
+                continue
+
+            if classified_for_event:
+                # Already fired for this event; keep state TRUE (idempotent).
+                controller.set_motion(self.camera, True, source='detector')
+                continue
+
+            # First motion frame for this event with classification on — classify.
+            try:
+                passed, top_class, dets = classifier.classify(
+                    frame_bgr, cls_classes, cls_min_conf,
+                )
+            except Exception as e:
+                print(f"  [Motion] {self.camera.name}: classifier error: {e}")
+                passed, top_class = False, None
+
+            if passed:
+                print(f"  [Motion] {self.camera.name}: classified as '{top_class}' — firing event")
+                controller.set_motion(self.camera, True, source=f'detector:{top_class}')
+                classified_for_event = True
+            # If classification failed, do NOT fire. Next motion frame will
+            # re-attempt — important for subjects that walk into view partway.
 
     def _build_zone_mask(self, cv2, np, scale_w, scale_h):
         """Build a uint8 binary mask (0/1) from configured zones.
