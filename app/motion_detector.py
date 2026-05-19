@@ -103,7 +103,13 @@ class MotionWorker:
         fps = max(1, int(self.cfg.get('fps', DEFAULT_FPS)))
         min_area_percent = float(self.cfg.get('min_area_percent', DEFAULT_MIN_AREA_PERCENT))
         min_motion_frames = max(1, int(self.cfg.get('min_motion_frames', DEFAULT_MIN_MOTION_FRAMES)))
-        motion_threshold_px = max(1, int(min_area_percent * 0.01 * scale_w * scale_h))
+
+        # Build the zone mask once. None = full frame (today's behavior).
+        zone_mask = self._build_zone_mask(cv2, np, scale_w, scale_h)
+        # Threshold is % of the zone area (or full frame if no zones), so a 1%
+        # setting means the same thing regardless of how the user has scoped.
+        zone_area_px = int(zone_mask.sum()) if zone_mask is not None else scale_w * scale_h
+        motion_threshold_px = max(1, int(min_area_percent * 0.01 * zone_area_px))
 
         url = self._build_stream_url()
         cmd = self._build_ffmpeg_cmd(url, scale_w, scale_h, fps)
@@ -125,6 +131,8 @@ class MotionWorker:
                 raise EOFError("ffmpeg pipe closed")
             frame = np.frombuffer(buf, dtype=np.uint8).reshape(scale_h, scale_w)
             fg = bg.apply(frame)
+            if zone_mask is not None:
+                fg = fg * zone_mask
             motion_area = int(cv2.countNonZero(fg))
 
             if motion_area >= motion_threshold_px:
@@ -134,6 +142,58 @@ class MotionWorker:
 
             is_motion = consecutive >= min_motion_frames
             controller.set_motion(self.camera, is_motion, source='detector')
+
+    def _build_zone_mask(self, cv2, np, scale_w, scale_h):
+        """Build a uint8 binary mask (0/1) from configured zones.
+
+        Returns None when no zones are configured — in that case the caller
+        treats the full frame as the analysis region (today's behavior).
+
+        Each zone: {name, enabled, exclude?, polygon: [[x,y], ...]} with
+        coords normalized to 0.0-1.0 so they scale across resolutions.
+        Final mask = (OR of enabled include-zones) AND NOT (OR of enabled
+        exclude-zones). If no include zones are defined, the full frame is
+        treated as the include region so users can add only exclude-zones
+        to mask out wind/tree areas without re-declaring the rest.
+        """
+        zones = self.cfg.get('zones') or []
+        if not zones:
+            return None
+
+        include_mask = np.zeros((scale_h, scale_w), dtype=np.uint8)
+        exclude_mask = np.zeros((scale_h, scale_w), dtype=np.uint8)
+        has_include = False
+
+        for z in zones:
+            if not z.get('enabled', True):
+                continue
+            polygon = z.get('polygon') or []
+            if len(polygon) < 3:
+                continue
+            try:
+                pts = np.array(
+                    [[int(round(float(p[0]) * scale_w)),
+                      int(round(float(p[1]) * scale_h))] for p in polygon],
+                    dtype=np.int32,
+                )
+            except (TypeError, ValueError, IndexError) as e:
+                print(f"  [Motion] {self.camera.name}: skipping malformed zone {z.get('name','?')}: {e}")
+                continue
+            if z.get('exclude', False):
+                cv2.fillPoly(exclude_mask, [pts], 1)
+            else:
+                cv2.fillPoly(include_mask, [pts], 1)
+                has_include = True
+
+        if not has_include:
+            include_mask[:] = 1
+
+        mask = include_mask * (1 - exclude_mask)
+        # Tell operators which zone area we ended up with — useful when
+        # tuning min_area_percent against a small zone.
+        zone_pct = float(mask.sum()) * 100.0 / (scale_w * scale_h)
+        print(f"  [Motion] {self.camera.name}: zone mask covers {zone_pct:.1f}% of frame")
+        return mask
 
     def _read_exact(self, stream, n):
         """Read exactly n bytes from stream. Return None on EOF/short read."""
@@ -213,15 +273,27 @@ _WORKERS_LOCK = threading.Lock()
 
 
 def start_worker(camera):
-    """Start (or re-start) the MotionWorker for a camera if motion is enabled."""
+    """Reconcile the MotionWorker to the camera's current motion config.
+
+    Handles all four transitions cleanly: stops any existing worker first,
+    then starts a fresh one only if motion is currently enabled. Called both
+    from camera lifecycle (camera.start) and from the config API (so toggling
+    motion off-or-on at runtime takes effect without restarting the camera).
+    """
+    with _WORKERS_LOCK:
+        existing = _WORKERS.pop(camera.id, None)
+    if existing:
+        existing.stop()
+        # Clear any in-flight motion state so we don't leave a stuck-ON event
+        # behind when the user toggles motion off or reconfigures it.
+        get_motion_controller().set_motion(camera, False, source='worker_stop', immediate=True)
+
     cfg = getattr(camera, 'motion', None) or {}
     if not cfg.get('enabled', False):
         return None
+
+    worker = MotionWorker(camera)
     with _WORKERS_LOCK:
-        existing = _WORKERS.get(camera.id)
-        if existing:
-            existing.stop()
-        worker = MotionWorker(camera)
         _WORKERS[camera.id] = worker
     worker.start()
     return worker

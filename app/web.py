@@ -455,6 +455,63 @@ def create_web_app(manager):
         from .motion_controller import get_motion_controller
         return jsonify({'cameraId': camera.id, 'motion': get_motion_controller().get_state(camera.id)})
 
+    @app.route('/api/cameras/<int:camera_id>/motion/config', methods=['GET'])
+    @login_required
+    def motion_config_get(camera_id):
+        """Return this camera's motion detection config."""
+        camera = manager.get_camera(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera not found'}), 404
+        return jsonify({'cameraId': camera.id, 'motion': getattr(camera, 'motion', {}) or {}})
+
+    @app.route('/api/cameras/<int:camera_id>/motion/config', methods=['PUT'])
+    @login_required
+    def motion_config_put(camera_id):
+        """Update this camera's motion detection config.
+
+        Merges incoming fields into the existing config (so partial updates
+        are fine), persists to disk, and reconciles the motion worker
+        (start/stop/restart) so changes take effect without restarting the
+        whole camera. Returns the resulting config.
+        """
+        camera = manager.get_camera(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera not found'}), 404
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({'error': 'Body must be a JSON object'}), 400
+
+        existing = dict(getattr(camera, 'motion', {}) or {})
+        # Type-coerce the keys we know about so the UI can send strings safely
+        coercions = {
+            'enabled': lambda v: bool(v),
+            'fps': lambda v: max(1, int(v)),
+            'min_area_percent': lambda v: max(0.01, float(v)),
+            'min_motion_frames': lambda v: max(1, int(v)),
+            'alarm_on_delay_ms': lambda v: max(0, int(v)),
+            'alarm_off_delay_ms': lambda v: max(0, int(v)),
+        }
+        for k, coerce in coercions.items():
+            if k in body:
+                try:
+                    existing[k] = coerce(body[k])
+                except (TypeError, ValueError) as e:
+                    return jsonify({'error': f'Invalid value for {k}: {e}'}), 400
+        # Zones are passed through as-is; MotionWorker validates per-zone.
+        if 'zones' in body:
+            if not isinstance(body['zones'], list):
+                return jsonify({'error': 'zones must be a list'}), 400
+            existing['zones'] = body['zones']
+
+        camera.motion = existing
+        manager.save_config()
+
+        # Reconcile the worker — start/stop/restart depending on new enabled state.
+        from . import motion_detector
+        motion_detector.start_worker(camera)
+
+        return jsonify({'cameraId': camera.id, 'motion': camera.motion})
+
     @app.route('/api/cameras/start-all', methods=['POST'])
     @login_required
     def start_all():
