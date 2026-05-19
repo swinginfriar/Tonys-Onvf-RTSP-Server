@@ -1881,7 +1881,10 @@ def get_web_ui_html(current_settings=None):
                                         Motion will only be reported when one of these is detected. Pick what matters for this
                                         camera's view &mdash; a driveway probably wants people + vehicles; a backyard might want
                                         people + pets. Anything <em>not</em> selected (birds, "umbrella", etc.) is suppressed
-                                        even when the model recognizes it correctly.
+                                        even when the model recognizes it correctly.<br>
+                                        <strong>Same list works for both models.</strong> Both nano and small can detect every
+                                        class shown below; the difference is accuracy. A pickup truck might be tagged as "car" by
+                                        nano and "truck" by small &mdash; if you want it to trigger either way, enable both.
                                     </small>
                                     <div id="motionClassClassList" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.05); max-height: 220px; overflow-y: auto;"></div>
                                 </div>

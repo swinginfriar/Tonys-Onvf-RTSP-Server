@@ -30,15 +30,17 @@ MODELS = {
         'label': 'YOLOv8 nano',
         'file': 'yolov8n.pt',
         'description': 'Fast, lower accuracy. ~50ms/frame on CPU, ~6MB model.',
-        'tradeoffs': 'Best for high-volume scenes. May miss small or distant '
-                     'subjects. Doesn\'t distinguish truck from car well.',
+        'tradeoffs': 'Best for high-volume scenes. More likely to miss small '
+                     'or distant subjects. Often labels trucks/buses as "car" '
+                     '— enable both if you want broad vehicle coverage.',
     },
     'yolov8s': {
         'label': 'YOLOv8 small',
         'file': 'yolov8s.pt',
         'description': 'Slower, better accuracy. ~120ms/frame on CPU, ~22MB model.',
-        'tradeoffs': 'Recommended for security. Better at small/distant '
-                     'subjects and correctly classifies trucks, buses, etc.',
+        'tradeoffs': 'Recommended for most cameras. Better at small/distant '
+                     'subjects and more reliable at distinguishing truck vs '
+                     'car vs bus.',
     },
 }
 
