@@ -1124,6 +1124,36 @@ class ONVIFService:
 </SOAP-ENV:Envelope>"""
         return Response(body, status=400, mimetype='application/soap+xml')
 
+    def _resource_unknown_fault(self, sub_id):
+        """Fault returned when a client polls a subscription we no longer have.
+
+        Uses the standards-compliant wsrf-rl:ResourceUnknownFault subcode so
+        the client knows to CreatePullPointSubscription again instead of
+        continuing to poll the dead URL until its locally-tracked
+        TerminationTime expires. This matters after a proxy restart: in-memory
+        subscriptions are gone but NVRs may keep polling for minutes.
+        """
+        print(f"  [Events] {self.camera.name}: stale poll for sub {sub_id[:8]}... — sending ResourceUnknownFault")
+        body = """<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:wsrf-rl="http://docs.oasis-open.org/wsrf/rl-2"
+                   xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+    <SOAP-ENV:Body>
+        <SOAP-ENV:Fault>
+            <SOAP-ENV:Code>
+                <SOAP-ENV:Value>SOAP-ENV:Sender</SOAP-ENV:Value>
+                <SOAP-ENV:Subcode>
+                    <SOAP-ENV:Value>wsrf-rl:ResourceUnknownFault</SOAP-ENV:Value>
+                </SOAP-ENV:Subcode>
+            </SOAP-ENV:Code>
+            <SOAP-ENV:Reason>
+                <SOAP-ENV:Text xml:lang="en">Subscription is unknown or expired; create a new PullPoint subscription</SOAP-ENV:Text>
+            </SOAP-ENV:Reason>
+        </SOAP-ENV:Fault>
+    </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>"""
+        return Response(body, status=400, mimetype='application/soap+xml')
+
     def _get_events_wsdl(self):
         local_ip = self.camera.get_effective_ip()
         wsdl = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1245,7 +1275,7 @@ class ONVIFService:
 
         sub, events = get_event_bus().pull_messages(sub_id, wait_seconds, max_messages)
         if sub is None:
-            return self._soap_fault("Unknown or expired subscription")
+            return self._resource_unknown_fault(sub_id)
 
         now_iso = self._utc_iso()
         term_iso = self._utc_iso(sub.expires_at)
@@ -1311,7 +1341,7 @@ class ONVIFService:
 
         sub = get_event_bus().renew(sub_id, timeout)
         if sub is None:
-            return self._soap_fault("Unknown or expired subscription")
+            return self._resource_unknown_fault(sub_id)
 
         body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
@@ -1341,7 +1371,7 @@ class ONVIFService:
     def _handle_set_sync_point(self, sub_id):
         ok = get_event_bus().set_synchronization_point(sub_id)
         if not ok:
-            return self._soap_fault("Unknown or expired subscription")
+            return self._resource_unknown_fault(sub_id)
         body = """<?xml version="1.0" encoding="UTF-8"?>
 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
                    xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
