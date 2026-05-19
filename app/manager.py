@@ -253,7 +253,8 @@ class CameraManager:
                 'gridColumns': getattr(self, 'grid_columns', 3),
                 'watchdogEnabled': getattr(self, 'watchdog_enabled', False),
                 'ipWhitelist': getattr(self, 'ip_whitelist', []),
-                'debugMode': self.debug_mode
+                'autoBoot': getattr(self, 'auto_boot', False),
+                'debugMode': self.debug_mode,
             },
             'gridFusion': {
                 'layouts': getattr(self, 'grid_fusion_layouts', []),
