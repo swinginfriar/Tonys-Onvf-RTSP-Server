@@ -1888,6 +1888,13 @@ def get_web_ui_html(current_settings=None):
                                     </small>
                                     <div id="motionClassClassList" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.05); max-height: 220px; overflow-y: auto;"></div>
                                 </div>
+
+                                <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(0,0,0,0.08); display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                                    <small style="color: #718096; font-size: 11px; flex: 1;">
+                                        Push these settings (model, stream, confidence, classes, enabled state) to multiple cameras at once. Overwrites the target cameras' existing classification config.
+                                    </small>
+                                    <button type="button" class="btn btn-secondary" onclick="motionClassCopyOpen()" style="font-size: 12px; white-space: nowrap;"><i class="fas fa-copy"></i> Copy to other cameras</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1922,6 +1929,30 @@ def get_web_ui_html(current_settings=None):
             <div style="display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end;">
                 <button type="button" class="btn btn-secondary" onclick="motionZoneCopyClose()">Cancel</button>
                 <button type="button" class="btn btn-success" id="zone-copy-confirm-btn" onclick="motionZoneCopyConfirm()">Copy Zone</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="motion-class-copy-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <div class="modal-title">Copy Object Detection to Other Cameras</div>
+                <button class="close-btn" onclick="motionClassCopyClose()">×</button>
+            </div>
+            <div id="motion-class-copy-summary" style="margin-bottom: 14px;"></div>
+            <div style="padding: 10px 12px; background: rgba(229, 62, 62, 0.08); border-left: 3px solid #e53e3e; border-radius: 4px; font-size: 12px; margin-bottom: 14px;">
+                <strong>Warning:</strong> This will <em>overwrite</em> the entire Object Detection configuration on every selected target camera &mdash; their existing enabled state, model choice, stream, confidence, and class selection will be replaced. Each camera's <em>zones</em> are not affected.
+            </div>
+            <div style="background: rgba(0,0,0,0.04); padding: 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); max-height: 320px; overflow-y: auto;">
+                <label style="display: flex; align-items: center; gap: 8px; margin: 0 0 10px 0; padding-bottom: 8px; border-bottom: 1px solid rgba(0,0,0,0.06); font-weight: 600;">
+                    <input type="checkbox" id="motion-class-copy-select-all" onchange="motionClassCopyToggleAll()">
+                    Select All
+                </label>
+                <div id="motion-class-copy-camera-list"></div>
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end;">
+                <button type="button" class="btn btn-secondary" onclick="motionClassCopyClose()">Cancel</button>
+                <button type="button" class="btn btn-success" id="motion-class-copy-confirm-btn" onclick="motionClassCopyConfirm()">Copy &amp; Overwrite</button>
             </div>
         </div>
     </div>
@@ -3846,6 +3877,108 @@ def get_web_ui_html(current_settings=None):
             const opt = sel.options[sel.selectedIndex];
             const desc = opt ? (opt.dataset.description || '') : '';
             document.getElementById('motionClassModelDescription').textContent = desc;
+        }}
+
+        // ===== Classification copy-to-cameras =====
+        // Snapshots the CURRENT form values (what the user is looking at) so
+        // they can push unsaved tweaks. Then PUTs the full classification
+        // block to each target, replacing whatever they had.
+        let motionClassCopySnapshot = null;
+
+        function motionClassCopyOpen() {{
+            const sourceCamId = document.getElementById('camera-id').value;
+            if (!sourceCamId) {{
+                alert('Save this camera first, then you can copy its Object Detection settings.');
+                return;
+            }}
+            // Snapshot the current form values from the classification panel
+            const collected = motionCollectConfig().classification || {{}};
+            motionClassCopySnapshot = JSON.parse(JSON.stringify(collected));
+
+            const enabledLabel = motionClassCopySnapshot.enabled ? 'enabled' : 'disabled';
+            const classList = (motionClassCopySnapshot.classes || []).join(', ') || '(none)';
+            document.getElementById('motion-class-copy-summary').innerHTML = `
+                <p style="margin: 0 0 8px 0;">These Object Detection settings will be copied:</p>
+                <div style="background: rgba(0,0,0,0.04); padding: 10px; border-radius: 4px; font-size: 12px; line-height: 1.7;">
+                    <div><strong>Status:</strong> ${{enabledLabel}}</div>
+                    <div><strong>Model:</strong> ${{motionClassCopySnapshot.model || 'yolov8n'}}</div>
+                    <div><strong>Stream:</strong> ${{motionClassCopySnapshot.stream || 'sub'}}</div>
+                    <div><strong>Min confidence:</strong> ${{parseFloat(motionClassCopySnapshot.min_confidence || 0.4).toFixed(2)}}</div>
+                    <div><strong>Classes:</strong> ${{classList}}</div>
+                </div>
+            `;
+
+            const list = document.getElementById('motion-class-copy-camera-list');
+            const items = (cameras || [])
+                .filter(c => String(c.id) !== String(sourceCamId))
+                .map(c => {{
+                    const cm = (c.motion || {{}}).classification || {{}};
+                    const curStatus = cm.enabled ? 'on' : 'off';
+                    const curModel = cm.model || '—';
+                    return `<label style="display: flex; align-items: center; gap: 8px; padding: 5px 4px; cursor: pointer; border-bottom: 1px solid rgba(0,0,0,0.04);">
+                        <input type="checkbox" class="motion-class-copy-cam" value="${{c.id}}">
+                        <span style="flex: 1; font-size: 13px;">${{c.name}} <small style="color: #718096;">(currently: ${{curStatus}}, ${{curModel}})</small></span>
+                    </label>`;
+                }});
+            list.innerHTML = items.length ? items.join('') : '<small style="color: #718096;">No other cameras available.</small>';
+
+            document.getElementById('motion-class-copy-select-all').checked = false;
+            const btn = document.getElementById('motion-class-copy-confirm-btn');
+            btn.disabled = false;
+            btn.innerHTML = 'Copy &amp; Overwrite';
+            document.getElementById('motion-class-copy-modal').classList.add('active');
+        }}
+
+        function motionClassCopyToggleAll() {{
+            const checked = document.getElementById('motion-class-copy-select-all').checked;
+            document.querySelectorAll('.motion-class-copy-cam').forEach(cb => {{ cb.checked = checked; }});
+        }}
+
+        function motionClassCopyClose() {{
+            document.getElementById('motion-class-copy-modal').classList.remove('active');
+            motionClassCopySnapshot = null;
+        }}
+
+        async function motionClassCopyConfirm() {{
+            if (!motionClassCopySnapshot) return;
+            const checks = document.querySelectorAll('.motion-class-copy-cam:checked');
+            const targets = Array.from(checks).map(c => c.value);
+            if (targets.length === 0) {{
+                alert('Select at least one target camera.');
+                return;
+            }}
+            const conf = `Overwrite Object Detection settings on ${{targets.length}} camera${{targets.length === 1 ? '' : 's'}}? Each target's current model/classes/confidence/stream/enabled choice will be replaced. Zones are untouched.`;
+            if (!confirm(conf)) return;
+
+            const btn = document.getElementById('motion-class-copy-confirm-btn');
+            btn.disabled = true;
+            let okCount = 0, failCount = 0;
+            const payload = JSON.stringify({{classification: motionClassCopySnapshot}});
+
+            for (let i = 0; i < targets.length; i++) {{
+                const targetId = targets[i];
+                btn.innerHTML = `Copying... (${{i + 1}}/${{targets.length}})`;
+                try {{
+                    const resp = await fetch(`/api/cameras/${{targetId}}/motion/config`, {{
+                        method: 'PUT',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: payload,
+                    }});
+                    if (resp.ok) okCount++; else failCount++;
+                }} catch (e) {{
+                    console.warn('classification copy to', targetId, 'failed:', e);
+                    failCount++;
+                }}
+            }}
+
+            btn.disabled = false;
+            btn.innerHTML = 'Copy &amp; Overwrite';
+            motionClassCopyClose();
+            const msg = failCount > 0
+                ? `Done: ${{okCount}} succeeded, ${{failCount}} failed. Check console for details.`
+                : `Done — Object Detection copied to ${{okCount}} camera${{okCount === 1 ? '' : 's'}}.`;
+            alert(msg);
+            if (typeof loadData === 'function') loadData();
         }}
 
         async function saveMotionConfig(cameraId) {{
