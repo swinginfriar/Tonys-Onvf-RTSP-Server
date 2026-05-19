@@ -18,17 +18,21 @@ Models are cached on disk under <repo>/models/yolo/. First-use download takes
 1-2s for nano, 2-4s for small. After that, loads are essentially instant.
 """
 
-import os
 import threading
+import urllib.request
 from pathlib import Path
 
 # Supported models. The description is shown in the UI so users can make an
 # informed choice. Add to this list to expose additional models — they need
-# to be ultralytics-compatible model identifiers.
+# to be ultralytics-compatible model identifiers. The `url` is the direct
+# ultralytics release asset; pinned to a known version so we don't depend
+# on ultralytics internals to resolve weights.
+_ULTRALYTICS_ASSETS = 'https://github.com/ultralytics/assets/releases/download/v8.4.0'
 MODELS = {
     'yolov8n': {
         'label': 'YOLOv8 nano',
         'file': 'yolov8n.pt',
+        'url': f'{_ULTRALYTICS_ASSETS}/yolov8n.pt',
         'description': 'Fast, lower accuracy. ~50ms/frame on CPU, ~6MB model.',
         'tradeoffs': 'Best for high-volume scenes. More likely to miss small '
                      'or distant subjects. Often labels trucks/buses as "car" '
@@ -37,6 +41,7 @@ MODELS = {
     'yolov8s': {
         'label': 'YOLOv8 small',
         'file': 'yolov8s.pt',
+        'url': f'{_ULTRALYTICS_ASSETS}/yolov8s.pt',
         'description': 'Slower, better accuracy. ~120ms/frame on CPU, ~22MB model.',
         'tradeoffs': 'Recommended for most cameras. Better at small/distant '
                      'subjects and more reliable at distinguishing truck vs '
@@ -97,32 +102,68 @@ class _Classifier:
         if model_name not in MODELS:
             raise ValueError(f"Unknown model {model_name!r}; supported: {list(MODELS)}")
         self.model_name = model_name
-        self._lock = threading.Lock()  # YOLO inference isn't always thread-safe
-        self._model = None  # Loaded on first classify()
-        self._names = None  # int->str class name mapping
+        # _inference_lock guards model.predict(); YOLO instances aren't
+        # guaranteed thread-safe for concurrent inference.
+        self._inference_lock = threading.Lock()
+        # _load_lock guards the load/download. Separate from inference lock
+        # so an in-progress inference doesn't block a parallel first-load on
+        # another model, and vice versa.
+        self._load_lock = threading.Lock()
+        self._model = None
+        self._names = None
         self.model_file = MODELS_DIR / MODELS[model_name]['file']
 
     def _load(self):
+        # Fast path: already loaded
         if self._model is not None:
             return
-        # Import ultralytics here so users without classification enabled
-        # never pay the import cost (which pulls in torch + a lot more).
-        from ultralytics import YOLO
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        # Ultralytics resolves weights either from a local path or by
-        # downloading from its release server. Passing the file name lets it
-        # download into the current working directory by default — we cd
-        # there briefly so the file lands in MODELS_DIR.
-        cwd = os.getcwd()
-        try:
-            os.chdir(MODELS_DIR)
-            print(f"  [Classifier] Loading {self.model_name} (downloads on first use)...")
-            self._model = YOLO(MODELS[self.model_name]['file'])
-            # Cache the class-id -> name dict for quick lookup
-            self._names = self._model.names if hasattr(self._model, 'names') else {}
+        with self._load_lock:
+            # Double-check after acquiring the lock — another caller may have
+            # finished loading while we were blocked.
+            if self._model is not None:
+                return
+            self._ensure_weights_file()
+            # Import ultralytics here so the proxy doesn't pay the torch
+            # import cost unless classification is actually enabled somewhere.
+            from ultralytics import YOLO
+            print(f"  [Classifier] Loading {self.model_name} from {self.model_file}")
+            # Pass the absolute path so ultralytics doesn't touch the
+            # process-global cwd. Loading from an absolute, existing file
+            # is a pure file-read in ultralytics — no chdir, no network.
+            model = YOLO(str(self.model_file))
+            self._names = getattr(model, 'names', {}) or {}
+            self._model = model
             print(f"  [Classifier] {self.model_name} ready ({len(self._names)} classes)")
-        finally:
-            os.chdir(cwd)
+
+    def _ensure_weights_file(self):
+        """Download the model weights to self.model_file if not already present.
+
+        Done explicitly (rather than letting ultralytics handle it via cwd)
+        so the download lands at a deterministic absolute path with no
+        impact on the process-global working directory. This avoids a
+        nasty class of bug where other threads doing relative-path I/O
+        during the download window write to the wrong directory.
+        """
+        if self.model_file.exists() and self.model_file.stat().st_size > 0:
+            return
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        url = MODELS[self.model_name]['url']
+        # Download to a temp file in the same directory, then atomic-rename.
+        # Prevents a partially-downloaded file from being seen as "exists"
+        # by a concurrent _load() call.
+        tmp = self.model_file.with_suffix(self.model_file.suffix + '.part')
+        print(f"  [Classifier] Downloading {self.model_name} weights to {self.model_file}")
+        try:
+            urllib.request.urlretrieve(url, str(tmp))
+            tmp.replace(self.model_file)
+        except Exception:
+            # Clean up partial download so the next attempt starts fresh
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+            raise
 
     def classify(self, image_bgr, classes_filter=None, min_confidence=0.4):
         """Run inference on one BGR frame.
@@ -136,7 +177,7 @@ class _Classifier:
         """
         self._load()
         filter_set = set(classes_filter) if classes_filter else None
-        with self._lock:
+        with self._inference_lock:
             results = self._model.predict(
                 image_bgr,
                 verbose=False,
