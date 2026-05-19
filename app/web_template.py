@@ -3556,6 +3556,28 @@ def get_web_ui_html(current_settings=None):
             motionZoneRender();
         }}
 
+        function motionZoneRename(index) {{
+            const z = motionZones[index];
+            if (!z) return;
+            const input = prompt(`Rename zone "${{z.name}}" to:`, z.name);
+            if (input === null) return;  // user canceled
+            const newName = input.trim();
+            if (!newName) {{
+                alert('Zone name cannot be empty.');
+                return;
+            }}
+            if (newName === z.name) return;  // unchanged
+            // Warn (but don't block) on duplicate names — the copy-to-cameras
+            // feature uses name as the dedup key, so duplicates make that
+            // workflow ambiguous.
+            const dup = motionZones.findIndex((other, i) => i !== index && other.name === newName);
+            if (dup >= 0) {{
+                if (!confirm(`Another zone is already named "${{newName}}". Continue anyway?`)) return;
+            }}
+            motionZones[index].name = newName;
+            motionRenderZonesList();
+        }}
+
         function motionRenderZonesList() {{
             const list = document.getElementById('motionZonesList');
             if (!list) return;
@@ -3569,9 +3591,10 @@ def get_web_ui_html(current_settings=None):
                 return `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(0,0,0,0.04); border-radius: 4px; margin-bottom: 4px; opacity: ${{opacity}};">
                     <span style="width: 10px; height: 10px; background: ${{color}}; border-radius: 50%;"></span>
                     <span style="flex: 1; font-size: 13px;">${{z.name}} <small style="color: #718096;">(${{z.exclude ? 'exclude' : 'include'}}, ${{z.polygon.length}} pts)</small></span>
+                    <button type="button" class="btn btn-secondary" onclick="motionZoneRename(${{i}})" style="font-size: 11px; padding: 2px 8px;" title="Rename"><i class="fas fa-pen"></i></button>
                     <button type="button" class="btn btn-secondary" onclick="motionZoneCopyOpen(${{i}})" style="font-size: 11px; padding: 2px 8px;" title="Copy this zone to other cameras"><i class="fas fa-copy"></i></button>
                     <button type="button" class="btn btn-secondary" onclick="motionZoneToggle(${{i}})" style="font-size: 11px; padding: 2px 8px;">${{z.enabled ? 'Disable' : 'Enable'}}</button>
-                    <button type="button" class="btn btn-secondary" onclick="motionZoneRemove(${{i}})" style="font-size: 11px; padding: 2px 8px;"><i class="fas fa-trash"></i></button>
+                    <button type="button" class="btn btn-secondary" onclick="motionZoneRemove(${{i}})" style="font-size: 11px; padding: 2px 8px;" title="Remove"><i class="fas fa-trash"></i></button>
                 </div>`;
             }}).join('');
         }}
