@@ -1706,13 +1706,108 @@ def get_web_ui_html(current_settings=None):
                     </div>
                 </div>
                 
+                <div id="motion-detection-section" style="margin-top: 24px; padding-top: 24px; border-top: 1px solid #e2e8f0;">
+                    <h3 style="margin-top: 0; margin-bottom: 16px; color: var(--text-title); font-size: 16px; display: flex; align-items: center; gap: 8px;">
+                        <i class="fas fa-running"></i> Motion Detection
+                    </h3>
+
+                    <label class="auto-start-row" style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; margin-bottom: 0;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="background: var(--primary-color); color: white; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                                <i class="fas fa-running"></i>
+                            </div>
+                            <div>
+                                <span class="auto-start-label" style="font-size: 14px; font-weight: 700; color: var(--text-title); display: block; line-height: 1.2;">Enable Motion Detection</span>
+                                <small style="color: #718096; font-size: 11px;">Local OpenCV-based detection that emits standard ONVIF motion events for your NVR. Requires the camera to be running.</small>
+                            </div>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="motionEnabled" onchange="toggleMotionUi()">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </label>
+
+                    <div id="motion-settings-panel" style="display: none; margin-top: 20px;">
+                        <div style="background: rgba(0,0,0,0.03); padding: 15px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 16px;">
+                            <div class="form-group" style="margin-bottom: 12px;">
+                                <label class="form-label" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Sensitivity</span>
+                                    <span style="font-weight: 400; color: #718096;">Min motion area: <span id="motionSensitivityLabel">1.0%</span> of analyzed region</span>
+                                </label>
+                                <input type="range" id="motionSensitivity" min="0.1" max="20" step="0.1" value="1.0" style="width: 100%;" oninput="document.getElementById('motionSensitivityLabel').textContent = parseFloat(this.value).toFixed(1) + '%';">
+                                <small style="color: #718096; font-size: 11px;">Lower = more sensitive (less change required to trigger). 1% is a good starting point for most cameras; raise it if you get false positives from wind/lighting noise.</small>
+                            </div>
+                        </div>
+
+                        <details style="margin-bottom: 16px;">
+                            <summary style="cursor: pointer; color: var(--text-title); font-size: 13px; font-weight: 600; padding: 8px 0;">Advanced</summary>
+                            <div style="background: rgba(0,0,0,0.03); padding: 15px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08); margin-top: 8px;">
+                                <div class="form-row" style="gap: 12px; margin-bottom: 12px;">
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label class="form-label" style="font-size: 12px;">Detection FPS</label>
+                                        <input type="number" class="form-input" id="motionFps" value="3" min="1" max="15">
+                                        <small style="color: #718096; font-size: 11px;">Frames analyzed per second</small>
+                                    </div>
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label class="form-label" style="font-size: 12px;">Min Motion Frames</label>
+                                        <input type="number" class="form-input" id="motionMinMotionFrames" value="2" min="1" max="10">
+                                        <small style="color: #718096; font-size: 11px;">Frames above threshold before motion triggers</small>
+                                    </div>
+                                </div>
+                                <div class="form-row" style="gap: 12px; margin-bottom: 0;">
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label class="form-label" style="font-size: 12px;">On Delay (ms)</label>
+                                        <input type="number" class="form-input" id="motionAlarmOnDelayMs" value="500" min="0" max="10000" step="100">
+                                        <small style="color: #718096; font-size: 11px;">Debounce before motion-on event fires</small>
+                                    </div>
+                                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                        <label class="form-label" style="font-size: 12px;">Off Delay (ms)</label>
+                                        <input type="number" class="form-input" id="motionAlarmOffDelayMs" value="3000" min="0" max="60000" step="100">
+                                        <small style="color: #718096; font-size: 11px;">Quiet period before motion-off event fires</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+
+                        <div style="background: rgba(0,0,0,0.03); padding: 15px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <label class="form-label" style="margin: 0;">Zones</label>
+                                <small style="color: #718096; font-size: 11px;">Click on the snapshot to add polygon points. "Finish" closes the polygon.</small>
+                            </div>
+
+                            <div style="position: relative; background: #000; border-radius: 6px; overflow: hidden;">
+                                <canvas id="motionZoneCanvas" width="640" height="360" style="display: block; width: 100%; max-width: 640px; height: auto; cursor: crosshair; image-rendering: pixelated;"></canvas>
+                                <div id="motionZoneOverlayMsg" style="position: absolute; top: 8px; left: 8px; padding: 4px 10px; background: rgba(0,0,0,0.6); color: white; border-radius: 4px; font-size: 12px; display: none;"></div>
+                            </div>
+
+                            <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;">
+                                <button type="button" class="btn btn-secondary" onclick="motionZoneStartDrawing('include')" style="font-size: 12px;"><i class="fas fa-plus"></i> Add Include Zone</button>
+                                <button type="button" class="btn btn-secondary" onclick="motionZoneStartDrawing('exclude')" style="font-size: 12px;"><i class="fas fa-ban"></i> Add Exclude Zone</button>
+                                <button type="button" class="btn btn-secondary" onclick="motionZoneFinishDrawing()" id="motionZoneFinishBtn" style="font-size: 12px; display: none;"><i class="fas fa-check"></i> Finish</button>
+                                <button type="button" class="btn btn-secondary" onclick="motionZoneCancelDrawing()" id="motionZoneCancelBtn" style="font-size: 12px; display: none;"><i class="fas fa-times"></i> Cancel</button>
+                                <button type="button" class="btn btn-secondary" onclick="motionZoneRefreshSnapshot()" style="font-size: 12px;"><i class="fas fa-sync"></i> Refresh Snapshot</button>
+                                <button type="button" class="btn btn-secondary" onclick="motionZoneClearAll()" style="font-size: 12px;"><i class="fas fa-trash"></i> Clear All</button>
+                            </div>
+
+                            <div id="motionZonesList" style="margin-top: 10px;"></div>
+
+                            <small style="color: #718096; font-size: 11px; display: block; margin-top: 8px;">
+                                <strong>How zones work:</strong> If no zones are defined, the full frame is analyzed.
+                                Include zones (green) limit analysis to specific regions. Exclude zones (red) mask out
+                                noisy regions like trees or roads. Sensitivity is a percent of the analyzed area, so
+                                small zones become proportionally more sensitive.
+                            </small>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="alert alert-info">
                     <strong>Common formats:</strong><br>
                     Hikvision: /Streaming/Channels/101<br>
                     Reolink: /h264Preview_01_main<br>
                     Dahua: /cam/realmonitor?channel=1&subtype=0
                 </div>
-                
+
                 <button type="submit" class="btn btn-success" style="width:100%">Save Camera</button>
             </form>
         </div>
@@ -3080,9 +3175,10 @@ def get_web_ui_html(current_settings=None):
             }});
             
             toggleSubStreamFields();
+            await loadMotionConfig('');
             document.getElementById('camera-modal').classList.add('active');
         }}
-        
+
         async function openEditModal(id) {{
             document.getElementById('copy-from-group').style.display = 'none';
             const camera = cameras.find(c => c.id === id);
@@ -3170,10 +3266,11 @@ def get_web_ui_html(current_settings=None):
             
             toggleNetworkFields();
             toggleSubStreamFields();
-            
+            await loadMotionConfig(camera.id);
+
             document.getElementById('camera-modal').classList.add('active');
         }}
-        
+
         function closeModal() {{
             document.getElementById('camera-modal').classList.remove('active');
             document.getElementById('camera-form').reset();
@@ -3194,7 +3291,314 @@ def get_web_ui_html(current_settings=None):
                 notice.style.display = checked ? 'block' : 'none';
             }}
         }}
-        
+
+        // ===== Motion Detection UI =====
+        // Coordinates in motionZones are normalized 0.0-1.0 so they survive
+        // any resolution change. The canvas is fixed at 640x360 internally
+        // and CSS-scales for display; we convert clicks to normalized coords.
+
+        let motionZones = [];           // [{name, enabled, exclude, polygon: [[x,y],...]}]
+        let motionDrawMode = null;       // 'include' | 'exclude' | null
+        let motionCurrentPolygon = [];   // points being drawn, normalized
+        let motionSnapshotImg = null;    // current snapshot Image
+        let motionMousePos = null;       // last mouse position while drawing (normalized)
+
+        function toggleMotionUi() {{
+            const enabled = document.getElementById('motionEnabled').checked;
+            document.getElementById('motion-settings-panel').style.display = enabled ? 'block' : 'none';
+            if (enabled && !motionSnapshotImg) {{
+                // Lazy-load snapshot the first time motion is enabled in the modal
+                motionZoneRefreshSnapshot();
+            }}
+        }}
+
+        async function loadMotionConfig(cameraId) {{
+            // Reset state
+            motionZones = [];
+            motionCurrentPolygon = [];
+            motionDrawMode = null;
+            motionSnapshotImg = null;
+            document.getElementById('motionEnabled').checked = false;
+            document.getElementById('motionSensitivity').value = 1.0;
+            document.getElementById('motionSensitivityLabel').textContent = '1.0%';
+            document.getElementById('motionFps').value = 3;
+            document.getElementById('motionMinMotionFrames').value = 2;
+            document.getElementById('motionAlarmOnDelayMs').value = 500;
+            document.getElementById('motionAlarmOffDelayMs').value = 3000;
+            document.getElementById('motion-settings-panel').style.display = 'none';
+            motionRenderZonesList();
+            motionZoneRender();
+
+            if (cameraId === '' || cameraId === null || cameraId === undefined) return;
+
+            try {{
+                const resp = await fetch(`/api/cameras/${{cameraId}}/motion/config`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const m = data.motion || {{}};
+                document.getElementById('motionEnabled').checked = !!m.enabled;
+                if (m.fps != null) document.getElementById('motionFps').value = m.fps;
+                if (m.min_area_percent != null) {{
+                    document.getElementById('motionSensitivity').value = m.min_area_percent;
+                    document.getElementById('motionSensitivityLabel').textContent = parseFloat(m.min_area_percent).toFixed(1) + '%';
+                }}
+                if (m.min_motion_frames != null) document.getElementById('motionMinMotionFrames').value = m.min_motion_frames;
+                if (m.alarm_on_delay_ms != null) document.getElementById('motionAlarmOnDelayMs').value = m.alarm_on_delay_ms;
+                if (m.alarm_off_delay_ms != null) document.getElementById('motionAlarmOffDelayMs').value = m.alarm_off_delay_ms;
+                motionZones = Array.isArray(m.zones) ? m.zones.map(z => ({{
+                    name: z.name || 'zone',
+                    enabled: z.enabled !== false,
+                    exclude: !!z.exclude,
+                    polygon: (z.polygon || []).map(p => [parseFloat(p[0]), parseFloat(p[1])]),
+                }})) : [];
+                motionRenderZonesList();
+                if (document.getElementById('motionEnabled').checked) {{
+                    document.getElementById('motion-settings-panel').style.display = 'block';
+                    motionZoneRefreshSnapshot();
+                }}
+            }} catch (e) {{
+                console.warn('loadMotionConfig failed:', e);
+            }}
+        }}
+
+        function motionZoneRefreshSnapshot() {{
+            const cameraId = document.getElementById('camera-id').value;
+            if (!cameraId) {{
+                motionShowOverlay('Save the camera first, then a snapshot can be loaded.');
+                return;
+            }}
+            motionShowOverlay('Loading snapshot...');
+            const img = new Image();
+            img.onload = () => {{
+                motionSnapshotImg = img;
+                motionShowOverlay(null);
+                motionZoneRender();
+            }};
+            img.onerror = () => {{
+                motionShowOverlay('Snapshot unavailable (is the camera running?)');
+            }};
+            img.src = `/api/cameras/${{cameraId}}/snapshot?t=${{Date.now()}}`;
+        }}
+
+        function motionShowOverlay(text) {{
+            const el = document.getElementById('motionZoneOverlayMsg');
+            if (!el) return;
+            if (text) {{
+                el.textContent = text;
+                el.style.display = 'block';
+            }} else {{
+                el.style.display = 'none';
+            }}
+        }}
+
+        function motionZoneRender() {{
+            const canvas = document.getElementById('motionZoneCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+            // Background: snapshot or neutral placeholder
+            if (motionSnapshotImg) {{
+                ctx.drawImage(motionSnapshotImg, 0, 0, W, H);
+            }} else {{
+                ctx.fillStyle = '#1a202c';
+                ctx.fillRect(0, 0, W, H);
+                ctx.fillStyle = '#4a5568';
+                ctx.font = '13px sans-serif';
+                ctx.fillText('No snapshot loaded', 12, 24);
+            }}
+            // Existing zones
+            motionZones.forEach((z, i) => {{
+                motionDrawPolygon(ctx, z.polygon, z.exclude, false, W, H);
+            }});
+            // Polygon currently being drawn
+            if (motionDrawMode && motionCurrentPolygon.length > 0) {{
+                motionDrawPolygon(ctx, motionCurrentPolygon, motionDrawMode === 'exclude', true, W, H);
+                // Preview line to current mouse position
+                if (motionMousePos) {{
+                    const last = motionCurrentPolygon[motionCurrentPolygon.length - 1];
+                    ctx.strokeStyle = motionDrawMode === 'exclude' ? '#fc8181' : '#68d391';
+                    ctx.lineWidth = 1.5;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(last[0] * W, last[1] * H);
+                    ctx.lineTo(motionMousePos[0] * W, motionMousePos[1] * H);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }}
+            }}
+        }}
+
+        function motionDrawPolygon(ctx, polygon, isExclude, isInProgress, W, H) {{
+            if (polygon.length === 0) return;
+            const stroke = isExclude ? '#e53e3e' : '#38a169';
+            const fill = isExclude ? 'rgba(229, 62, 62, 0.25)' : 'rgba(56, 161, 105, 0.25)';
+            ctx.beginPath();
+            polygon.forEach((p, i) => {{
+                const x = p[0] * W, y = p[1] * H;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }});
+            if (!isInProgress) ctx.closePath();
+            ctx.fillStyle = fill;
+            if (!isInProgress) ctx.fill();
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            // Vertex dots
+            polygon.forEach(p => {{
+                ctx.fillStyle = stroke;
+                ctx.beginPath();
+                ctx.arc(p[0] * W, p[1] * H, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }});
+        }}
+
+        function motionZoneCanvasClick(e) {{
+            if (!motionDrawMode) return;
+            const canvas = document.getElementById('motionZoneCanvas');
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+            motionCurrentPolygon.push([x, y]);
+            motionZoneRender();
+        }}
+
+        function motionZoneCanvasMove(e) {{
+            if (!motionDrawMode || motionCurrentPolygon.length === 0) return;
+            const canvas = document.getElementById('motionZoneCanvas');
+            const rect = canvas.getBoundingClientRect();
+            motionMousePos = [
+                (e.clientX - rect.left) / rect.width,
+                (e.clientY - rect.top) / rect.height,
+            ];
+            motionZoneRender();
+        }}
+
+        function motionZoneStartDrawing(mode) {{
+            motionDrawMode = mode;
+            motionCurrentPolygon = [];
+            motionMousePos = null;
+            document.getElementById('motionZoneFinishBtn').style.display = 'inline-flex';
+            document.getElementById('motionZoneCancelBtn').style.display = 'inline-flex';
+            motionShowOverlay(`Drawing ${{mode}} zone: click to add points, "Finish" when done`);
+            motionZoneRender();
+        }}
+
+        function motionZoneFinishDrawing() {{
+            if (!motionDrawMode) return;
+            if (motionCurrentPolygon.length < 3) {{
+                alert('A zone needs at least 3 points.');
+                return;
+            }}
+            const isExclude = motionDrawMode === 'exclude';
+            const sameTypeCount = motionZones.filter(z => !!z.exclude === isExclude).length;
+            motionZones.push({{
+                name: `${{motionDrawMode}}_${{sameTypeCount + 1}}`,
+                enabled: true,
+                exclude: isExclude,
+                polygon: motionCurrentPolygon.slice(),
+            }});
+            motionZoneCancelDrawing();
+            motionRenderZonesList();
+            motionZoneRender();
+        }}
+
+        function motionZoneCancelDrawing() {{
+            motionDrawMode = null;
+            motionCurrentPolygon = [];
+            motionMousePos = null;
+            document.getElementById('motionZoneFinishBtn').style.display = 'none';
+            document.getElementById('motionZoneCancelBtn').style.display = 'none';
+            motionShowOverlay(null);
+            motionZoneRender();
+        }}
+
+        function motionZoneClearAll() {{
+            if (motionZones.length === 0 && !motionDrawMode) return;
+            if (!confirm('Remove all zones?')) return;
+            motionZones = [];
+            motionZoneCancelDrawing();
+            motionRenderZonesList();
+            motionZoneRender();
+        }}
+
+        function motionZoneRemove(index) {{
+            motionZones.splice(index, 1);
+            motionRenderZonesList();
+            motionZoneRender();
+        }}
+
+        function motionZoneToggle(index) {{
+            if (!motionZones[index]) return;
+            motionZones[index].enabled = !motionZones[index].enabled;
+            motionRenderZonesList();
+            motionZoneRender();
+        }}
+
+        function motionRenderZonesList() {{
+            const list = document.getElementById('motionZonesList');
+            if (!list) return;
+            if (motionZones.length === 0) {{
+                list.innerHTML = '<small style="color: #718096; font-size: 11px;">No zones defined — full frame will be analyzed.</small>';
+                return;
+            }}
+            list.innerHTML = motionZones.map((z, i) => {{
+                const color = z.exclude ? '#e53e3e' : '#38a169';
+                const opacity = z.enabled ? '1' : '0.4';
+                return `<div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(0,0,0,0.04); border-radius: 4px; margin-bottom: 4px; opacity: ${{opacity}};">
+                    <span style="width: 10px; height: 10px; background: ${{color}}; border-radius: 50%;"></span>
+                    <span style="flex: 1; font-size: 13px;">${{z.name}} <small style="color: #718096;">(${{z.exclude ? 'exclude' : 'include'}}, ${{z.polygon.length}} pts)</small></span>
+                    <button type="button" class="btn btn-secondary" onclick="motionZoneToggle(${{i}})" style="font-size: 11px; padding: 2px 8px;">${{z.enabled ? 'Disable' : 'Enable'}}</button>
+                    <button type="button" class="btn btn-secondary" onclick="motionZoneRemove(${{i}})" style="font-size: 11px; padding: 2px 8px;"><i class="fas fa-trash"></i></button>
+                </div>`;
+            }}).join('');
+        }}
+
+        function motionCollectConfig() {{
+            return {{
+                enabled: document.getElementById('motionEnabled').checked,
+                fps: parseInt(document.getElementById('motionFps').value || '3', 10),
+                min_area_percent: parseFloat(document.getElementById('motionSensitivity').value || '1.0'),
+                min_motion_frames: parseInt(document.getElementById('motionMinMotionFrames').value || '2', 10),
+                alarm_on_delay_ms: parseInt(document.getElementById('motionAlarmOnDelayMs').value || '500', 10),
+                alarm_off_delay_ms: parseInt(document.getElementById('motionAlarmOffDelayMs').value || '3000', 10),
+                zones: motionZones.map(z => ({{
+                    name: z.name,
+                    enabled: z.enabled,
+                    exclude: !!z.exclude,
+                    polygon: z.polygon,
+                }})),
+            }};
+        }}
+
+        async function saveMotionConfig(cameraId) {{
+            try {{
+                const resp = await fetch(`/api/cameras/${{cameraId}}/motion/config`, {{
+                    method: 'PUT',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify(motionCollectConfig()),
+                }});
+                if (!resp.ok) {{
+                    const err = await resp.text();
+                    console.warn('motion config save failed:', resp.status, err);
+                    return false;
+                }}
+                return true;
+            }} catch (e) {{
+                console.warn('motion config save error:', e);
+                return false;
+            }}
+        }}
+
+        // Wire canvas events once at script load
+        (function () {{
+            const c = document.getElementById('motionZoneCanvas');
+            if (c) {{
+                c.addEventListener('click', motionZoneCanvasClick);
+                c.addEventListener('mousemove', motionZoneCanvasMove);
+            }}
+        }})();
+
         async function saveCamera(event) {{
             event.preventDefault();
             
@@ -3265,15 +3669,29 @@ def get_web_ui_html(current_settings=None):
                 console.log(`[SaveCamera] Response status: ${{response.status}}`);
                 
                 if (response.ok) {{
-                    console.log('[SaveCamera] Save successful, closing modal and reloading data...');
+                    console.log('[SaveCamera] Save successful, persisting motion config...');
+                    // Resolve the camera id (edit uses existing, add takes it from the response body)
+                    let savedId = cameraId;
+                    if (!isEdit) {{
+                        try {{
+                            const created = await response.json();
+                            if (created && created.id != null) savedId = created.id;
+                        }} catch (_e) {{}}
+                    }}
+                    if (savedId !== '' && savedId != null) {{
+                        const motionOk = await saveMotionConfig(savedId);
+                        if (!motionOk) {{
+                            console.warn('[SaveCamera] Camera saved but motion config save failed; the camera change went through, motion settings did not.');
+                        }}
+                    }}
                     closeModal();
-                    
+
                     // Reset button state immediately after closing modal so it's ready for next time
                     btn.disabled = false;
                     btn.innerHTML = originalText;
-                    
+
                     // Now reload data in the background (no need to await it for the UI to be responsive)
-                    loadData(); 
+                    loadData();
                 }} else {{
                     const error = await response.json();
                     console.error('[SaveCamera] Save failed:', error);

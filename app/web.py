@@ -455,6 +455,53 @@ def create_web_app(manager):
         from .motion_controller import get_motion_controller
         return jsonify({'cameraId': camera.id, 'motion': get_motion_controller().get_state(camera.id)})
 
+    @app.route('/api/cameras/<int:camera_id>/snapshot', methods=['GET'])
+    @login_required
+    def admin_snapshot(camera_id):
+        """Return a JPEG snapshot of the camera for the admin UI (zone editor).
+
+        Server-side proxy of the camera's substream so the browser doesn't
+        need to hit the per-camera ONVIF port with credentials. Mirrors the
+        approach used by /onvif/snapshot but skips ONVIF auth (login_required
+        already gates it).
+        """
+        import os, tempfile
+        from urllib.parse import quote
+        from .ffmpeg_manager import FFmpegManager
+
+        camera = manager.get_camera(camera_id)
+        if not camera:
+            return jsonify({'error': 'Camera not found'}), 404
+
+        suffix = '_sub' if not getattr(camera, 'disable_substream', False) else '_main'
+        rtsp_port = getattr(manager, 'rtsp_port', 8554)
+        if getattr(manager, 'rtsp_auth_enabled', False):
+            user = quote(getattr(manager, 'global_username', 'admin') or 'admin', safe='')
+            pwd = quote(getattr(manager, 'global_password', 'admin') or 'admin', safe='')
+            url = f"rtsp://{user}:{pwd}@127.0.0.1:{rtsp_port}/{camera.path_name}{suffix}"
+        else:
+            url = f"rtsp://127.0.0.1:{rtsp_port}/{camera.path_name}{suffix}"
+
+        fd, path = tempfile.mkstemp(suffix='.jpg')
+        os.close(fd)
+        try:
+            ok, err = FFmpegManager().capture_snapshot(url, path)
+            if not ok:
+                return jsonify({'error': f'Snapshot failed: {err}'}), 502
+            with open(path, 'rb') as f:
+                content = f.read()
+            from flask import make_response
+            resp = make_response(content)
+            resp.headers['Content-Type'] = 'image/jpeg'
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            return resp
+        finally:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
     @app.route('/api/cameras/<int:camera_id>/motion/config', methods=['GET'])
     @login_required
     def motion_config_get(camera_id):
