@@ -33,6 +33,15 @@ from .event_bus import get_event_bus
 import re
 
 class ONVIFService:
+    # Throttle 401 log lines per source IP so a misconfigured/repeatedly-401'd
+    # client (e.g. an NVR controller polling at high rate with wrong creds)
+    # can't fill the journal. Shared across all per-camera ONVIFService
+    # instances so one Protect controller hammering all 16 cameras at once
+    # still only produces a small number of distinct log entries.
+    _auth_failure_log_cache = {}
+    _auth_failure_log_lock = threading.Lock()
+    AUTH_FAILURE_LOG_THROTTLE_S = 60
+
     def __init__(self, camera):
         self.camera = camera
         self.app = None
@@ -108,7 +117,19 @@ class ONVIFService:
                         self.auth_cache[client_ip] = current_time
                         return f(*args, **kwargs)
                 
-                # Authentication failed - return 401
+                # Authentication failed — return 401. Throttled log so the
+                # operator can see "X.X.X.X is being rejected" without it
+                # spamming the journal when the client retries continuously.
+                now = time.time()
+                should_log = False
+                with ONVIFService._auth_failure_log_lock:
+                    last = ONVIFService._auth_failure_log_cache.get(client_ip, 0)
+                    if now - last > ONVIFService.AUTH_FAILURE_LOG_THROTTLE_S:
+                        ONVIFService._auth_failure_log_cache[client_ip] = now
+                        should_log = True
+                if should_log:
+                    print(f"  [ONVIF] Auth failed for {client_ip} on {self.camera.name} — "
+                          f"if this is your NVR controller, add the IP to Settings → IP Whitelist")
                 return Response(
                     'Authentication required', 401,
                     {'WWW-Authenticate': 'Basic realm="ONVIF"'}
