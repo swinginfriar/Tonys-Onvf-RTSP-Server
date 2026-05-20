@@ -56,6 +56,16 @@ MODELS = {
                      'better speed/accuracy than YOLOv8n on CPU. Untested '
                      'in our pipeline — try on one camera first.',
     },
+    'yolo26s': {
+        'label': 'YOLO26 small (experimental)',
+        'file': 'yolo26s.pt',
+        'url': f'{_ULTRALYTICS_ASSETS}/yolo26s.pt',
+        'description': 'Newer Ultralytics small. CPU-optimized successor to YOLOv8s.',
+        'tradeoffs': 'Same COCO-80 classes as YOLOv8. Ultralytics claims '
+                     'better speed/accuracy than YOLOv8s on CPU at a similar '
+                     'compute cost. Untested in our pipeline — try on one '
+                     'camera first.',
+    },
 }
 
 DEFAULT_MODEL = 'yolov8n'
