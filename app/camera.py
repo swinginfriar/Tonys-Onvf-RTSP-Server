@@ -822,12 +822,22 @@ class VirtualONVIFCamera:
         conf_threshold = self.ai_confidence_threshold / 100.0
         print(f"  [AI Camera ({self.name})] Motion change threshold: {motion_threshold:.2f}% (sensitivity: {self.ai_motion_sensitivity}), confidence threshold: {self.ai_confidence_threshold}%")
         
+        # MOG2 builds a per-pixel statistical model of the scene. Slowly-
+        # changing patterns (dappled light moving with the sun, foliage
+        # swaying within its typical range) get learned into the background
+        # and ignored, while genuinely new objects stand out. detectShadows
+        # flags shadow pixels separately (value 127) so we can drop them.
+        # varThreshold=16 is the OpenCV default and works well outdoors.
+        bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=500, varThreshold=16, detectShadows=True
+        )
         motion_state = False
         last_detected_time = 0
         cooldown_period = 5.0  # seconds
-        prev_gray = None
         startup_frames = 0
-        startup_grace = 5  # Skip first N frames to establish baseline
+        # MOG2 needs ~30 frames to converge on a confident background model
+        # (~15s at the loop's 2 FPS target). Skip detection until then.
+        startup_grace = 30
         last_loop_time = 0
         
         # Zone-aware motion masking: only detect motion inside the drawn zone
@@ -868,30 +878,29 @@ class VirtualONVIFCamera:
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     gray = cv2.GaussianBlur(gray, (21, 21), 0)
                     
-                    if prev_gray is None:
-                        # First frame — establish baseline, no detection
-                        prev_gray = gray
-                        startup_frames += 1
-                    elif startup_frames <= startup_grace:
-                        # Still in grace period — update baseline but don't trigger
-                        prev_gray = gray
-                        startup_frames += 1
+                    startup_frames += 1
+                    # Feed every frame to MOG2 so the background model
+                    # learns continuously, including during the grace
+                    # period while it's still converging.
+                    fgmask = bg_subtractor.apply(gray)
+
+                    if startup_frames <= startup_grace:
+                        # Model still warming up — don't trigger detections
+                        pass
                     else:
-                        startup_frames += 1
-                        
-                        # Frame differencing: detect pixel-level changes
-                        frame_delta = cv2.absdiff(prev_gray, gray)
-                        thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
-                        
-                        # Apply zone mask: ignore all motion outside the drawn zone
+                        # Drop shadow pixels (MOG2 marks them as value 127)
+                        # so they don't count as motion. Only keep strong
+                        # foreground (value 255).
+                        _, thresh = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
+
+                        # Apply zone mask: ignore all motion outside the drawn
+                        # zone (mask + zone_pixel_count come from v8.2's
+                        # zone-aware logic above).
                         if zone_mask is not None:
                             thresh = cv2.bitwise_and(thresh, zone_mask)
                             change_pct = (cv2.countNonZero(thresh) / zone_pixel_count) * 100.0 if zone_pixel_count > 0 else 0.0
                         else:
                             change_pct = (cv2.countNonZero(thresh) / thresh.size) * 100.0
-                        
-                        # Update baseline for next comparison
-                        prev_gray = gray
                         
                         # Only run AI if enough motion detected
                         if change_pct < motion_threshold:
