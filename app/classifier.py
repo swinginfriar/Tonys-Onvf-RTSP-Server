@@ -47,6 +47,15 @@ MODELS = {
                      'subjects and more reliable at distinguishing truck vs '
                      'car vs bus.',
     },
+    'yolo26n': {
+        'label': 'YOLO26 nano (experimental)',
+        'file': 'yolo26n.pt',
+        'url': f'{_ULTRALYTICS_ASSETS}/yolo26n.pt',
+        'description': 'Newer Ultralytics nano. ~5MB model, CPU-optimized.',
+        'tradeoffs': 'Same COCO-80 classes as YOLOv8. Ultralytics claims '
+                     'better speed/accuracy than YOLOv8n on CPU. Untested '
+                     'in our pipeline — try on one camera first.',
+    },
 }
 
 DEFAULT_MODEL = 'yolov8n'
